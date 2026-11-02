@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Desktop Organizer</title>
+<style>
+  :root{
+    --bg0:#080a16; --bg1:#0d1024;
+    --glass:rgba(255,255,255,.045);
+    --glass-brd:rgba(255,255,255,.10);
+    --txt:#eef0ff; --dim:#9aa0c4; --mute:#666e99;
+    --pri:#6d5efc; --pri2:#a855f7; --cyan:#22d3ee;
+    --ok:#34d399; --warn:#fbbf24; --bad:#fb7185;
+    --r:16px;
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{
+    font:14px/1.55 "Segoe UI Variable Display","Segoe UI","Microsoft YaHei UI",system-ui,sans-serif;
+    color:var(--txt); background:var(--bg0);
+    overflow:hidden; -webkit-font-smoothing:antialiased;
+  }
+  /* 背景：蓝紫光斑 + 细网格 */
+  body::before{
+    content:""; position:fixed; inset:-20%; z-index:-2;
+    background:
+      radial-gradient(46vw 46vw at 12% 8%, rgba(109,94,252,.32), transparent 62%),
+      radial-gradient(40vw 40vw at 88% 4%, rgba(168,85,247,.26), transparent 62%),
+      radial-gradient(50vw 50vw at 70% 96%, rgba(34,211,238,.16), transparent 60%),
+      linear-gradient(160deg,var(--bg1),var(--bg0) 70%);
+  }
+  body::after{
+    content:""; position:fixed; inset:0; z-index:-1; pointer-events:none;
+    background-image:
+      linear-gradient(rgba(255,255,255,.028) 1px,transparent 1px),
+      linear-gradient(90deg,rgba(255,255,255,.028) 1px,transparent 1px);
+    background-size:52px 52px;
+    mask-image:radial-gradient(70% 70% at 50% 40%,#000 40%,transparent 100%);
+    -webkit-mask-image:radial-gradient(70% 70% at 50% 40%,#000 40%,transparent 100%);
+  }
+
+  .app{height:100vh; display:flex; flex-direction:column; padding:18px 20px 20px; gap:14px}
+
+  /* ---- 顶栏 ---- */
+  header{
+    display:flex; align-items:center; gap:16px;
+    padding:14px 18px; border-radius:var(--r);
+    background:var(--glass); border:1px solid var(--glass-brd);
+    backdrop-filter:blur(22px) saturate(150%);
+    box-shadow:0 8px 32px rgba(0,0,0,.36), inset 0 1px 0 rgba(255,255,255,.07);
+  }
+  .logo{
+    width:38px;height:38px;border-radius:11px;flex:none;display:grid;place-items:center;
+    background:linear-gradient(135deg,var(--pri),var(--pri2));
+    box-shadow:0 6px 20px rgba(109,94,252,.5), inset 0 1px 0 rgba(255,255,255,.4);
+  }
+  .logo svg{width:20px;height:20px}
+  h1{font-size:15.5px; font-weight:650; letter-spacing:.2px; line-height:1.2}
+  .sub{font-size:11.5px; color:var(--dim); margin-top:2px}
+  .rootbox{
+    margin-left:auto; display:flex; align-items:center; gap:9px;
+    padding:7px 13px; border-radius:10px; background:rgba(255,255,255,.04);
+    border:1px solid var(--glass-brd); font-size:12px; color:var(--dim);
+    max-width:46vw;
+  }
+  .rootbox b{color:var(--cyan); font-weight:600}
+  .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);flex:none}
+
+  /* ---- 主区 ---- */
+  main{flex:1; display:grid; grid-template-columns:1fr 296px; gap:14px; min-height:0}
+
+  .panel{
+    display:flex; flex-direction:column; min-height:0; overflow:hidden;
+    border-radius:var(--r); background:var(--glass); border:1px solid var(--glass-brd);
+    backdrop-filter:blur(22px) saturate(150%);
+    box-shadow:0 8px 32px rgba(0,0,0,.34), inset 0 1px 0 rgba(255,255,255,.06);
+  }
+  .panel-hd{
+    display:flex; align-items:center; gap:10px; padding:12px 16px;
+    border-bottom:1px solid rgba(255,255,255,.07); flex:none;
+  }
+  .panel-hd h2{font-size:12.5px; font-weight:600; letter-spacing:.4px; color:var(--dim); text-transform:uppercase}
+  .count{
+    font-size:11px; padding:1.5px 8px; border-radius:999px;
+    background:rgba(109,94,252,.20); color:#c7c0ff; border:1px solid rgba(109,94,252,.34);
+  }
+  .spacer{flex:1}
+
+  /* ---- 文件表 ---- */
+  .thead,.row{
+    display:grid; grid-template-columns:26px 1fr 74px 92px 64px 26px;
+    align-items:center; gap:10px; padding:0 16px;
+  }
+  .thead{
+    height:34px; flex:none; font-size:11px; letter-spacing:.5px;
+    color:var(--mute); text-transform:uppercase; border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .list{flex:1; overflow-y:auto; overflow-x:hidden; padding:6px 0}
+  .list::-webkit-scrollbar{width:9px}
+  .list::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12); border-radius:99px; border:2px solid transparent; background-clip:padding-box}
+  .list::-webkit-scrollbar-thumb:hover{background:rgba(255,255,255,.2); background-clip:padding-box}
+
+  .row{
+    min-height:44px; border-radius:10px; margin:2px 8px; padding:6px 10px;
+    border:1px solid transparent; cursor:default; transition:.14s;
+  }
+  .row:hover{background:rgba(255,255,255,.05); border-color:rgba(255,255,255,.08)}
+  .row.on{background:linear-gradient(90deg,rgba(109,94,252,.17),rgba(168,85,247,.07)); border-color:rgba(109,94,252,.42)}
+  .row.skip{opacity:.42}
+  .row.sel{box-shadow:inset 0 0 0 1px rgba(34,211,238,.5)}
+
+  .cb{
+    width:17px;height:17px;border-radius:5px;flex:none;cursor:pointer;
+    border:1.5px solid rgba(255,255,255,.26); background:rgba(0,0,0,.24);
+    display:grid; place-items:center; transition:.14s;
+  }
+  .row.on .cb{background:linear-gradient(135deg,var(--pri),var(--pri2)); border-color:transparent}
+  .cb svg{width:11px;height:11px;opacity:0;transition:.14s}
+  .row.on .cb svg{opacity:1}
+
+  .fname{min-width:0}
+  .fname b{display:block; font-weight:520; font-size:13px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .fname span{display:block; font-size:11px; color:var(--mute); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+
+  .tag{
+    font-size:11px; padding:2px 8px; border-radius:7px; text-align:center; white-space:nowrap;
+    background:rgba(255,255,255,.07); border:1px solid rgba(255,255,255,.09); color:#dfe2ff;
+  }
+  .tag.h{color:#ffd9a8; border-color:rgba(251,191,36,.34); background:rgba(251,191,36,.12)}
+  .tag.m{color:#b8e8ff; border-color:rgba(34,211,238,.30); background:rgba(34,211,238,.10)}
+  .tag.l{color:#c9cbe4; border-color:rgba(255,255,255,.12)}
+
+  .conf{display:flex; align-items:center; gap:7px; font-size:11.5px; color:var(--dim)}
+  .bar{flex:1; height:4px; border-radius:99px; background:rgba(255,255,255,.10); overflow:hidden; min-width:22px}
+  .bar i{display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--pri),var(--cyan))}
+  .bar i.low{background:linear-gradient(90deg,#fb7185,#fbbf24)}
+
+  .edit{
+    width:24px;height:24px;border-radius:7px;display:grid;place-items:center;cursor:pointer;
+    color:var(--mute); transition:.14s;
+  }
+  .edit:hover{background:rgba(255,255,255,.1); color:var(--txt)}
+  .edit svg{width:13px;height:13px}
+
+  /* ---- 右侧操作 ---- */
+  aside{display:flex; flex-direction:column; gap:12px; min-height:0}
+  .stats{display:grid; grid-template-columns:1fr 1fr; gap:8px}
+  .stat{
+    padding:11px 12px; border-radius:12px; background:rgba(255,255,255,.045);
+    border:1px solid var(--glass-brd);
+  }
+  .stat b{display:block; font-size:19px; font-weight:650; letter-spacing:-.3px;
+    background:linear-gradient(135deg,#fff,#b9b2ff); -webkit-background-clip:text; background-clip:text; color:transparent}
+  .stat span{font-size:10.5px; color:var(--mute); letter-spacing:.3px}
+
+  .acts{display:flex; flex-direction:column; gap:8px; padding:14px; border-radius:var(--r);
+    background:var(--glass); border:1px solid var(--glass-brd); backdrop-filter:blur(22px)}
+  .acts h3{font-size:11px; color:var(--mute); letter-spacing:.6px; text-transform:uppercase; margin-bottom:2px}
+
+  button{
+    font:inherit; width:100%; padding:10px 14px; border-radius:11px; cursor:pointer;
+    border:1px solid var(--glass-brd); background:rgba(255,255,255,.05); color:var(--txt);
+    display:flex; align-items:center; gap:9px; transition:.15s; text-align:left; font-size:13px;
+  }
+  button:hover:not(:disabled){background:rgba(255,255,255,.1); border-color:rgba(255,255,255,.2); transform:translateY(-1px)}
+  button:active:not(:disabled){transform:translateY(0)}
+  button:disabled{opacity:.38; cursor:not-allowed}
+  button svg{width:15px;height:15px;flex:none;opacity:.85}
+
+  button.primary{
+    background:linear-gradient(135deg,var(--pri),var(--pri2)); border-color:transparent; font-weight:600;
+    box-shadow:0 8px 22px rgba(109,94,252,.36), inset 0 1px 0 rgba(255,255,255,.28);
+  }
+  button.primary:hover:not(:disabled){box-shadow:0 10px 28px rgba(109,94,252,.5)}
+  button.danger{border-color:rgba(251,113,133,.34); color:#ffc7d0; background:rgba(251,113,133,.09)}
+  button.danger:hover:not(:disabled){background:rgba(251,113,133,.17)}
+
+  .hint{font-size:11px; color:var(--mute); line-height:1.5; padding:0 2px}
+  .hint b{color:var(--warn); font-weight:600}
+
+  /* ---- 日志 ---- */
+  .log{padding:10px 14px; border-radius:12px; background:rgba(0,0,0,.26);
+    border:1px solid var(--glass-brd); font:11.5px/1.65 "Cascadia Mono",Consolas,monospace;
+    color:var(--dim); max-height:104px; overflow-y:auto; white-space:pre-wrap; word-break:break-all}
+  .log::-webkit-scrollbar{width:7px}
+  .log::-webkit-scrollbar-thumb{background:rgba(255,255,255,.12); border-radius:99px}
+  .log .ok{color:var(--ok)} .log .warn{color:var(--warn)} .log .bad{color:var(--bad)} .log .t{color:var(--mute)}
+
+  /* ---- 改判弹窗 ---- */
+  .modal{
+    position:fixed; inset:0; display:none; place-items:center; z-index:50;
+    background:rgba(4,6,16,.66); backdrop-filter:blur(6px);
+  }
+  .modal.on{display:grid}
+  .card{
+    width:392px; padding:20px; border-radius:20px; background:rgba(20,22,42,.94);
+    border:1px solid rgba(255,255,255,.13); box-shadow:0 30px 80px rgba(0,0,0,.66);
+  }
+  .card h4{font-size:14px; font-weight:640; margin-bottom:3px}
+  .card p{font-size:11.5px; color:var(--mute); margin-bottom:16px; word-break:break-all}
+  .field{margin-bottom:12px}
+  .field label{display:block; font-size:11px; color:var(--dim); margin-bottom:5px; letter-spacing:.4px}
+  select,input[type=text]{
+    font:inherit; width:100%; padding:9px 11px; border-radius:10px; color:var(--txt);
+    border:1px solid rgba(255,255,255,.14); background:rgba(0,0,0,.34); outline:none;
+  }
+  select:focus,input[type=text]:focus{border-color:rgba(109,94,252,.7); box-shadow:0 0 0 3px rgba(109,94,252,.16)}
+  option{background:#14162a}
+  .cardbtns{display:flex; gap:8px; margin-top:18px}
+  .cardbtns button{justify-content:center}
+
+  .empty{padding:60px 20px; text-align:center; color:var(--mute); font-size:13px}
+  .empty svg{width:42px;height:42px;opacity:.3;margin-bottom:10px}
+  .toast{
+    position:fixed; bottom:22px; left:50%; transform:translate(-50%,20px); opacity:0;
+    padding:10px 20px; border-radius:11px; font-size:12.5px; pointer-events:none;
+    background:rgba(24,26,48,.96); border:1px solid rgba(255,255,255,.15);
+    box-shadow:0 14px 40px rgba(0,0,0,.56); transition:.24s; z-index:99;
+  }
+  .toast.on{opacity:1; transform:translate(-50%,0)}
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <div class="logo">
+      <svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+      </svg>
+    </div>
+    <div>
+      <h1>Desktop Organizer</h1>
+      <div class="sub">AI 给建议 · 人来拍板 · 每一步都能回滚</div>
+    </div>
+    <div class="rootbox"><span class="dot"></span>根目录&nbsp;<b id="rootText">—</b></div>
+  </header>
+
+  <main>
+    <section class="panel">
+      <div class="panel-hd">
+        <h2>待整理文件</h2>
+        <span class="count" id="cntText">0</span>
+        <span class="spacer"></span>
+        <span class="count" id="selText">已选 0</span>
+      </div>
+      <div class="thead">
+        <span></span><span>文件</span><span>类别</span><span>重要度</span><span>置信度</span><span></span>
+      </div>
+      <div class="list" id="list">
+        <div class="empty">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+            <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>
+          </svg>
+          <div>点击右侧「扫描目录」开始</div>
+        </div>
+      </div>
+    </section>
+
+    <aside>
+      <div class="stats">
+        <div class="stat"><b id="stTotal">0</b><span>扫描文件</span></div>
+        <div class="stat"><b id="stSel">0</b><span>选中移动</span></div>
+        <div class="stat"><b id="stHigh">0</b><span>高置信</span></div>
+        <div class="stat"><b id="stLow">0</b><span>待确认</span></div>
+      </div>
+
+      <div class="acts">
+        <h3>操作</h3>
+        <button id="btnScan">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          扫描目录
+        </button>
+        <button id="btnPlan" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 6h16M4 12h10M4 18h7"/></svg>
+          生成整理计划
+        </button>
+        <button id="btnDry" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+          预览效果（不落盘）
+        </button>
+        <button id="btnRun" class="primary" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 3l14 9-14 9z"/></svg>
+          真正执行移动
+        </button>
+        <button id="btnBack" class="danger" disabled>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7v6h6"/><path d="M3.5 13a9 9 0 1 0 2-9.5"/></svg>
+          回滚上一次
+        </button>
+        <div class="hint">默认 <b>dry-run</b>：预览不移动任何文件。只有点「真正执行移动」并二次确认才会写盘，且随时可回滚。</div>
+      </div>
+
+      <div class="log" id="log"><span class="t">就绪。</span></div>
+    </aside>
+  </main>
+</div>
+
+<div class="modal" id="modal">
+  <div class="card">
+    <h4>改判这个文件</h4>
+    <p id="mPath">—</p>
+    <div class="field">
+      <label>类别</label>
+      <select id="mCat"></select>
+    </div>
+    <div class="field">
+      <label>重要程度</label>
+      <select id="mImp">
+        <option value="high">重要</option>
+        <option value="medium">常用</option>
+        <option value="low">归档</option>
+      </select>
+    </div>
+    <div class="field">
+      <label>目标子目录（可改）</label>
+      <input type="text" id="mDir" />
+    </div>
+    <div class="cardbtns">
+      <button id="mCancel">取消</button>
+      <button id="mSave" class="primary">保存并记住</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const CATS = ["图片","文档","表格","演示","PDF","音视频","压缩包","安装包","代码","快捷方式","字体","电子书","其他"];
+const IMP_LABEL = {high:"重要", medium:"常用", low:"归档"};
+
+const $ = (id) => document.getElementById(id);
+const state = { rows: [], selected: new Set(), planned: false, lastJournal: "" };
+let api = null;
+
+function log(msg, kind){
+  const el = $("log");
+  const t = new Date().toLocaleTimeString("zh-CN", {hour12:false});
+  const cls = kind ? ` class="${kind}"` : "";
+  el.insertAdjacentHTML("beforeend", `\n<span class="t">[${t}]</span> <span${cls}>${esc(msg)}</span>`);
+  el.scrollTop = el.scrollHeight;
+}
+function toast(msg){
+  const el = $("toast");
+  el.textContent = msg;
+  el.classList.add("on");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("on"), 2400);
+}
+function esc(s){
+  return String(s ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+}
+function fmtSize(n){
+  if (!n) return "0 B";
+  const u = ["B","KB","MB","GB"]; let i = 0, v = n;
+  while (v >= 1024 && i < u.length - 1){ v /= 1024; i++; }
+  return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
+}
+
+// ---------- 渲染 ----------
+function render(){
+  const list = $("list");
+  if (!state.rows.length){
+    list.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <div>点击右侧「扫描目录」开始</div></div>`;
+    return;
+  }
+  list.innerHTML = state.rows.map((r, i) => {
+    const on = state.selected.has(r.path);
+    const skip = !!r.skipped_reason && !r.action_id;
+    const cls = ["row", on ? "on" : "", skip ? "skip" : ""].filter(Boolean).join(" ");
+    const conf = r.confidence || 0;
+    const low = conf < 0.55 ? " low" : "";
+    return `<div class="${cls}" data-i="${i}">
+      <div class="cb"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
+      <div class="fname">
+        <b title="${esc(r.path)}">${esc(r.name)}</b>
+        <span>${esc(r.target_dir || "—")}${r.size ? " · " + fmtSize(r.size) : ""}</span>
+      </div>
+      <span class="tag">${esc(r.category || "其他")}</span>
+      <span class="tag ${r.importance === "high" ? "h" : r.importance === "medium" ? "m" : "l"}">${esc(IMP_LABEL[r.importance] || "归档")}</span>
+      <span class="conf"><span class="bar"><i class="${low}" style="width:${Math.round(conf * 100)}%"></i></span>${Math.round(conf * 100)}%</span>
+      <div class="edit" data-edit="${i}" title="改判并记住">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>
+      </div>
+    </div>`;
+  }).join("");
+  stats();
+}
+
+function stats(){
+  const total = state.rows.length;
+  const sel = state.selected.size;
+  const high = state.rows.filter((r) => r.confidence >= 0.8).length;
+  const low = state.rows.filter((r) => r.confidence > 0 && r.confidence < 0.55).length;
+  $("stTotal").textContent = total;
+  $("stSel").textContent = sel;
+  $("stHigh").textContent = high;
+  $("stLow").textContent = low;
+  $("cntText").textContent = total;
+  $("selText").textContent = `已选 ${sel}`;
+  $("btnPlan").disabled = total === 0;
+  $("btnDry").disabled = sel === 0;
+  $("btnRun").disabled = sel === 0;
+  $("btnBack").disabled = !state.lastJournal;
+}
+
+// ---------- 交互 ----------
+$("list").addEventListener("click", (e) => {
+  const edit = e.target.closest("[data-edit]");
+  if (edit){ openEdit(Number(edit.dataset.edit)); return; }
+  const rowEl = e.target.closest(".row");
+  if (!rowEl) return;
+  const r = state.rows[Number(rowEl.dataset.i)];
+  if (!r || !r.action_id){ toast("这个条目不可移动（目录或已跳过）"); return; }
+  if (state.selected.has(r.path)) state.selected.delete(r.path);
+  else state.selected.add(r.path);
+  render();
+});
+
+async function scan(){
+  try{
+    const res = await api.scan();
+    state.rows = res.rows || [];
+    state.planned = false;
+    $("rootText").textContent = res.root || "—";
+    log(`扫描完成：${res.total} 个条目`);
+    render();
+    if (state.rows.length) await plan();   // 扫完直接出建议，少点一次
+  }catch(err){ log(`扫描失败：${err}`, "bad"); }
+}
+
+async function plan(){
+  try{
+    const res = await api.plan();
+    state.rows = res.rows || [];
+    const have = new Set(state.rows.filter((r) => r.action_id).map((r) => r.path));
+    if (!state.planned || !state.selected.size) {
+      // 首次出计划：默认勾选高置信项，低置信留给人工确认
+      state.selected = new Set(
+        state.rows.filter((r) => r.action_id && r.confidence >= 0.55).map((r) => r.path)
+      );
+    } else {
+      state.selected = new Set([...state.selected].filter((p) => have.has(p)));
+    }
+    state.planned = true;
+    if (res.warnings && res.warnings.length) log(res.warnings.join("；"), "warn");
+    log(`计划已生成：${res.total} 个可执行移动，已默认勾选 ${state.selected.size} 个`);
+    render();
+  }catch(err){ log(`生成计划失败：${err}`, "bad"); }
+}
+
+function actionIds(){
+  return state.rows.filter((r) => state.selected.has(r.path) && r.action_id).map((r) => r.action_id);
+}
+
+async function apply(dryRun){
+  const ids = actionIds();
+  if (!ids.length){ toast("先选文件"); return; }
+  if (!dryRun && !confirm(`确定要真正移动 ${ids.length} 个文件吗？\n\n移动记录会写入日志，随时可以一键回滚。`)) return;
+  try{
+    const res = await api.apply(ids, dryRun);
+    if (res.dry_run){
+      log(`预览：将移动 ${res.applied} 个文件，未写盘`, "ok");
+      toast(`预览 ${res.applied} 个（未落盘）`);
+    }else{
+      state.lastJournal = res.journal_id || state.lastJournal;
+      log(`已移动 ${res.applied} 个文件，日志 ${res.journal_id}`, "ok");
+      toast(`已移动 ${res.applied} 个`);
+      await scan();
+    }
+    (res.errors || []).forEach((e) => log(`跳过/失败：${e}`, "warn"));
+    stats();
+  }catch(err){ log(`执行失败：${err}`, "bad"); }
+}
+
+async function rollback(){
+  try{
+    const res = await api.rollback(state.lastJournal);
+    log(`回滚完成：恢复 ${res.rolled_back} 个`, "ok");
+    toast(`已恢复 ${res.rolled_back} 个`);
+    state.lastJournal = "";
+    await scan();
+  }catch(err){ log(`回滚失败：${err}`, "bad"); }
+}
+
+function openEdit(i){
+  const r = state.rows[i];
+  if (!r) return;
+  const sel = $("mCat");
+  sel.innerHTML = CATS.map((c) => `<option value="${esc(c)}"${c === r.category ? " selected" : ""}>${esc(c)}</option>`).join("");
+  $("mImp").value = r.importance || "medium";
+  $("mDir").value = r.target_dir || `${r.category}/${IMP_LABEL[r.importance] || "常用"}`;
+  $("mPath").textContent = r.path;
+  $("modal").classList.add("on");
+  $("modal").dataset.i = i;
+}
+
+async function saveEdit(){
+  const i = Number($("modal").dataset.i);
+  const r = state.rows[i];
+  if (!r) return;
+  const category = $("mCat").value;
+  const importance = $("mImp").value;
+  const target_dir = $("mDir").value || `${category}/${IMP_LABEL[importance]}`;
+  try{
+    const res = await api.remember(r.path, category, importance, target_dir);
+    if (!res.saved){ toast(res.error || "保存失败"); return; }
+    const fresh = await api.plan_for(r.path);
+    if (fresh) state.rows[i] = { ...state.rows[i], ...fresh };
+    state.selected.add(r.path);
+    $("modal").classList.remove("on");
+    log(`已记住改判：${r.name} → ${target_dir}`, "ok");
+    toast("已记住，下次同类文件沿用");
+    render();
+  }catch(err){ log(`保存失败：${err}`, "bad"); }
+}
+
+// ---------- 绑定 ----------
+$("btnScan").onclick = scan;
+$("btnPlan").onclick = plan;
+$("btnDry").onclick = () => apply(true);
+$("btnRun").onclick = () => apply(false);
+$("btnBack").onclick = rollback;
+$("mCancel").onclick = () => $("modal").classList.remove("on");
+$("mSave").onclick = saveEdit;
+$("modal").addEventListener("click", (e) => { if (e.target === $("modal")) $("modal").classList.remove("on"); });
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") $("modal").classList.remove("on");
+  if (e.key === "Enter" && $("modal").classList.contains("on")) saveEdit();
+});
+$("mCat").addEventListener("change", () => {
+  const c = $("mCat").value;
+  $("mDir").value = `${c}/${IMP_LABEL[$("mImp").value] || "常用"}`;
+});
+$("mImp").addEventListener("change", () => {
+  $("mDir").value = `${$("mCat").value}/${IMP_LABEL[$("mImp").value] || "常用"}`;
+});
+
+// pywebview 注入完成后启动
+if (window.pywebview && window.pywebview.api){
+  api = window.pywebview.api;
+  log("界面就绪，等待扫描。");
+}else{
+  window.addEventListener("pywebviewready", () => {
+    api = window.pywebview.api;
+    log("界面就绪，等待扫描。");
+  });
+}
+</script>
+</body>
+</html>

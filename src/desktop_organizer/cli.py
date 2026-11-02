@@ -254,8 +254,11 @@ def cmd_journals(args: argparse.Namespace) -> int:
 
 
 def cmd_gui(args: argparse.Namespace) -> int:
-    from .ui.app import launch
-    return launch(root=args.root, depth=args.depth)
+    if getattr(args, "legacy_tk", False):
+        from .ui.app import launch  # 旧 Tk 界面，仅作兜底
+        return launch(root=args.root, depth=args.depth)
+    from .gui_web import run
+    return run(root=args.root, depth=args.depth)
 
 
 # ---------------------------------------------------------------- 参数解析
@@ -302,6 +305,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser("gui", help="启动图形界面")
     sp.add_argument("--root", default=os.environ.get("USERPROFILE", "."))
     sp.add_argument("--depth", type=int, default=1)
+    sp.add_argument("--legacy-tk", action="store_true", help="改用旧 Tk 界面（兜底）")
     sp.set_defaults(func=cmd_gui)
 
     return p
