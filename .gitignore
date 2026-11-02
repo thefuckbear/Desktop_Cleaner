@@ -27,6 +27,9 @@ logs/
 *.log
 *.jsonl.tmp
 
+# 运行时用户数据（偏好、改判记录，含本机痕迹）
+data/
+
 # 证据目录里的原始大文件（保留 txt 摘要）
 evidence/*.bin
 evidence/*.zip

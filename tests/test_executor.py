@@ -252,3 +252,67 @@ def test_directory_creation_is_also_planned_in_dry_run(tmp_path):
 
     assert result.applied == 1
     assert not (tmp_path / "deep").exists()
+
+
+def test_all_rejected_leaves_no_empty_journal_file(tmp_path):
+    """全部被守卫拒绝时不得留下 0 字节日志文件（真实桌面场景就踩过这个坑）。"""
+    src = tmp_path / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    before = journal.list_journals()
+
+    result = executor.execute(
+        _plan(tmp_path, [
+            PlanAction(action_id="1", src=str(src), dst=r"C:\Windows\x1.txt"),
+            PlanAction(action_id="2", src=str(src), dst=r"C:\Windows\x2.txt"),
+        ]),
+        dry_run=False,
+    )
+
+    assert result.applied == 0 and result.failed == 2
+    assert result.journal_id == ""
+    assert journal.list_journals() == before
+
+
+def test_all_rejected_gives_actionable_hint(tmp_path):
+    """全被拒时除了逐条错误，还要有一条能看懂的指引。"""
+    src = tmp_path / "a.txt"
+    src.write_text("x", encoding="utf-8")
+
+    result = executor.execute(
+        _plan(tmp_path, [PlanAction(action_id="1", src=str(src), dst=r"C:\Windows\x1.txt")]),
+        dry_run=False,
+    )
+
+    assert any("白名单" in e for e in result.errors)
+
+
+def test_rollback_removes_directories_created_by_the_move(tmp_path):
+    """回滚后不该留下执行时建的空目录。"""
+    src = tmp_path / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = tmp_path / "out" / "sub" / "a.txt"
+
+    done = executor.execute(_plan(tmp_path, [_act("1", src, dst)]), dry_run=False)
+    assert dst.is_file()
+
+    result = executor.rollback(done.journal_id)
+
+    assert result.rolled_back == 1
+    assert src.is_file()
+    assert not (tmp_path / "out").exists()
+
+
+def test_rollback_keeps_directory_that_still_has_files(tmp_path):
+    """目录里还有别的文件时不能删。"""
+    a = tmp_path / "a.txt"
+    b = tmp_path / "b.txt"
+    a.write_text("A", encoding="utf-8")
+    b.write_text("B", encoding="utf-8")
+    out = tmp_path / "out"
+    out.mkdir()
+    (out / "keep.txt").write_text("keep", encoding="utf-8")
+
+    done = executor.execute(_plan(tmp_path, [_act("1", a, out / "a.txt")]), dry_run=False)
+    executor.rollback(done.journal_id)
+
+    assert (out / "keep.txt").is_file()

@@ -49,7 +49,43 @@ def _ensure_parents(dst_dir: Path, *, dry_run: bool) -> None:
             item.mkdir(exist_ok=True)
 
 
-def _apply_one(action: PlanAction, *, dry_run: bool, journal_id: str, seq: int) -> str:
+class _JournalRef:
+    """惰性日志句柄：真要写第一条记录时才创建文件。
+
+    直接调用 ``journal.new_journal()`` 会在循环之前就落一个空文件，
+    一旦所有动作都被守卫拦下，磁盘上就只剩一个 0 字节的脏日志。
+    """
+
+    __slots__ = ("root", "id")
+
+    def __init__(self, root: str) -> None:
+        self.root = root
+        self.id = ""
+
+    def ensure(self) -> str:
+        if not self.id:
+            self.id = journal.new_journal(self.root)
+        return self.id
+
+
+def _prune_empty_dirs(path: Path) -> None:
+    """回滚后清掉因本次移动而变空的目录链；遇到非空目录或活不过守卫就停。"""
+    node = path
+    while node != node.parent:  # 到盘符根为止，绝不越界
+        try:
+            if any(node.iterdir()):
+                return
+        except OSError:
+            return
+        try:
+            guard.assert_safe(node)
+            node.rmdir()
+        except (GuardError, OSError):
+            return
+        node = node.parent
+
+
+def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int) -> str:
     """执行单条动作。返回空字符串表示成功，否则返回错误描述。"""
     if action.kind not in _VALID_KINDS:
         return f"[{action.action_id}] 不支持的动作类型: {action.kind!r}（只允许 move）"
@@ -86,13 +122,14 @@ def _apply_one(action: PlanAction, *, dry_run: bool, journal_id: str, seq: int) 
     if dry_run:
         return ""
 
+    jid = jref.ensure()
     try:
-        journal.log(journal_id, seq, "move", str(src), str(final_dst), "start")
+        journal.log(jid, seq, "move", str(src), str(final_dst), "start")
         shutil.move(str(src), str(final_dst))
-        journal.log(journal_id, seq, "move", str(src), str(final_dst), "done")
+        journal.log(jid, seq, "move", str(src), str(final_dst), "done")
     except Exception as exc:  # noqa: BLE001 - 单条失败不能中断整批
         try:
-            journal.log(journal_id, seq, "move", str(src), str(final_dst), "failed", error=str(exc))
+            journal.log(jid, seq, "move", str(src), str(final_dst), "failed", error=str(exc))
         except Exception:  # 日志写不进去也不能连带炸掉
             pass
         return f"[{action.action_id}] 移动失败: {exc}"
@@ -106,19 +143,35 @@ def execute(plan: Plan, dry_run: bool = True) -> ExecResult:
         result.ok = True
         return result
 
-    journal_id = "" if dry_run else journal.new_journal(plan.root)
-    result.journal_id = journal_id
+    jref = _JournalRef(plan.root)
 
     for seq, action in enumerate(plan.actions, start=1):
-        error = _apply_one(action, dry_run=dry_run, journal_id=journal_id, seq=seq)
+        error = _apply_one(action, dry_run=dry_run, jref=jref, seq=seq)
         if error:
             result.failed += 1
             result.errors.append(error)
         else:
             result.applied += 1
 
+    result.journal_id = jref.id
     result.ok = result.failed == 0
+    _explain_blanket_rejection(plan, result)
     return result
+
+
+def _explain_blanket_rejection(plan: Plan, result: ExecResult) -> None:
+    """一条都没动且全被守卫拦下时，补一句人话，别让用户只看到一屏报错。"""
+    if result.applied or result.failed != len(plan.actions):
+        return
+    verdicts = [guard.check_path(a.dst) for a in plan.actions]
+    blocked = [v for v in verdicts if not v.allowed]
+    if len(blocked) != len(verdicts):
+        return
+    result.errors.append(
+        f"没有执行任何移动：全部 {len(plan.actions)} 条目标都被安全守卫拒绝（{blocked[0].reason}）。"
+        "写盘白名单目前只有项目根，真实桌面等用户目录默认禁止写入；"
+        "确认要整理真实目录时，需要显式放开用户目录写入（constants.ALLOW_USER_DIRS）。"
+    )
 
 
 def _rollback_targets(records: list[dict]) -> list[dict]:
@@ -175,6 +228,8 @@ def rollback(journal_id: str) -> ExecResult:
             shutil.move(dst, src)
             journal.log(new_id_, seq, "rollback", dst, src, "done")
             result.rolled_back += 1
+            # 回滚后把因本次移动而变空的目录链清掉，别在桌面留一堆空壳
+            _prune_empty_dirs(dst_path.parent)
         except Exception as exc:  # noqa: BLE001
             result.failed += 1
             result.errors.append(f"[seq={record.get('seq')}] 回滚失败: {exc}")
