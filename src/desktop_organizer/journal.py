@@ -70,8 +70,13 @@ def log(
     dst: str,
     status: str,
     error: str = "",
+    extra: dict | None = None,
 ) -> None:
-    """追加一条记录并落盘（flush + fsync）。"""
+    """追加一条记录并落盘（flush + fsync）。
+
+    ``extra`` 用于随移动一并记下原始时间戳/大小（回滚复原排序键要读它），
+    键名不得覆盖上面这些固定字段。
+    """
     path = _path_for(journal_id)
     if op not in _VALID_OPS:
         raise ValueError(f"未知操作类型: {op!r}")
@@ -89,6 +94,10 @@ def log(
         "status": status,
         "error": error,
     }
+    if extra:
+        # 固定字段优先：extra 只能补新键，不能改写 src/dst/status 这类契约字段
+        for key, value in extra.items():
+            record.setdefault(key, value)
     line = json.dumps(record, ensure_ascii=False)
     with open(path, "a", encoding="utf-8", newline="\n") as fh:
         fh.write(line + "\n")

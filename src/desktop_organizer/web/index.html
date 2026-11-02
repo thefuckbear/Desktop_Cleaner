@@ -512,8 +512,9 @@ async function apply(dryRun){
 async function rollback(){
   try{
     const res = await api.rollback(state.lastJournal);
-    log(`回滚完成：恢复 ${res.rolled_back} 个`, "ok");
+    log(`回滚完成：恢复 ${res.rolled_back} 个（文件名与修改时间均已还原，桌面排序会回到整理前）`, "ok");
     toast(`已恢复 ${res.rolled_back} 个`);
+    (res.errors || []).forEach((e) => log(`跳过/失败：${e}`, "warn"));
     state.lastJournal = "";
     await scan();
   }catch(err){ log(`回滚失败：${err}`, "bad"); }

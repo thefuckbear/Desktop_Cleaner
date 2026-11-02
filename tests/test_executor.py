@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -366,6 +367,101 @@ def test_user_dir_dry_run_still_reports_zero_side_effects(fake_desktop):
     assert result.journal_id == ""
     assert src.is_file()
     assert not (fake_desktop / "文档").exists()
+
+
+def test_move_record_carries_original_timestamps_and_size(tmp_path):
+    """journal 的 start 必须记下原始 mtime/atime/size，回滚才有据可依。"""
+    src = tmp_path / "a.txt"
+    src.write_text("hello", encoding="utf-8")
+    os.utime(src, ns=(1_600_000_000_000_000_000, 1_600_000_100_000_000_000))
+    before = src.stat()
+
+    result = executor.execute(
+        _plan(tmp_path, [_act("1", src, tmp_path / "文档" / "a.txt")]), dry_run=False
+    )
+
+    start = next(
+        r for r in journal.load(result.journal_id)
+        if r["op"] == "move" and r["status"] == "start"
+    )
+    assert start["mtime_ns"] == before.st_mtime_ns
+    assert start["atime_ns"] == before.st_atime_ns
+    assert start["size"] == before.st_size
+
+
+def test_rollback_restores_original_timestamps(tmp_path):
+    """跨卷 copy 会把时间戳刷新；回滚必须把 mtime/atime 按记录复原。
+
+    桌面图标按「名称」排序时时间戳无关，但按「修改日期」排序时它决定顺序，
+    所以复原文件之后还要复原排序键。
+    """
+    src = tmp_path / "a.txt"
+    src.write_text("hello", encoding="utf-8")
+    os.utime(src, ns=(1_600_000_000_000_000_000, 1_600_000_100_000_000_000))
+    before = src.stat()
+
+    done = executor.execute(
+        _plan(tmp_path, [_act("1", src, tmp_path / "文档" / "a.txt")]), dry_run=False
+    )
+    back = executor.rollback(done.journal_id)
+
+    assert back.rolled_back == 1
+    after = src.stat()
+    assert after.st_mtime_ns == before.st_mtime_ns
+    assert after.st_atime_ns == before.st_atime_ns
+
+
+def test_rollback_keeps_sorted_order_identical_to_before(tmp_path):
+    """整理再回滚后，按名称排序的顺序必须与整理前逐项相同。"""
+    for name in ["a.txt", "m.txt", "z.txt"]:
+        (tmp_path / name).write_text(name, encoding="utf-8")
+    before = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+
+    actions = [
+        _act(f"act-{i}", tmp_path / name, tmp_path / "文档" / name)
+        for i, name in enumerate(["a.txt", "m.txt", "z.txt"])
+    ]
+    done = executor.execute(_plan(tmp_path, actions), dry_run=False)
+    assert done.applied == 3
+
+    back = executor.rollback(done.journal_id)
+
+    assert back.rolled_back == 3
+    after = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert after == before
+    assert not (tmp_path / "文档").exists()
+
+
+def test_rollback_never_removes_the_scan_root(tmp_path):
+    """根目录被搬空时，清理空目录必须停在根目录本身，不能把根删掉。"""
+    root = tmp_path / "desk"
+    root.mkdir()
+    src = root / "only.txt"
+    src.write_text("x", encoding="utf-8")
+
+    done = executor.execute(
+        _plan(root, [_act("1", src, root / "文档" / "only.txt")]), dry_run=False
+    )
+    executor.rollback(done.journal_id)
+
+    assert src.is_file()
+    assert root.is_dir()                 # 扫描根必须还在
+    assert not (root / "文档").exists()   # 自己建出来的层级清理掉
+
+
+def test_rollback_never_removes_a_user_data_dir_root(fake_desktop):
+    """即使不知道扫描根，也绝不允许 rmdir 掉桌面/文档这类用户目录本体。"""
+    src = fake_desktop / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = fake_desktop / "文档" / "a.txt"
+
+    done = executor.execute(
+        _plan(fake_desktop, [_act("1", src, dst)]), dry_run=False, allow_user_dirs=True
+    )
+    executor.rollback(done.journal_id, allow_user_dirs=True)
+
+    assert src.is_file()
+    assert fake_desktop.is_dir()          # 用户目录本体必须保留
 
 
 def test_rollback_of_user_dir_move_needs_the_same_permission(fake_desktop):

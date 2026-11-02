@@ -68,10 +68,33 @@ class _JournalRef:
         return self.id
 
 
+def _restore_stamp(path: Path, record: dict) -> None:
+    """按日志里的原始时间戳复原文件。
+
+    桌面开启「自动排列」时，图标顺序是排序键的纯函数（默认按名称）。
+    若用户改成按「修改日期」排序，mtime 就是排序键 —— 回滚不动它，
+    图标就会跟整理前不一致。复原失败不致命，静默放过（文件已回到原位）。
+    """
+    mtime_ns, atime_ns = record.get("mtime_ns"), record.get("atime_ns")
+    if not isinstance(mtime_ns, int) or not isinstance(atime_ns, int):
+        return
+    try:
+        os.utime(path, ns=(atime_ns, mtime_ns))
+    except OSError:
+        pass
+
+
 def _prune_empty_dirs(path: Path, *, allow_user_dirs: bool | None = None) -> None:
-    """回滚后清掉因本次移动而变空的目录链；遇到非空目录或活不过守卫就停。"""
+    """回滚后清掉因本次移动而变空的目录链；遇到非空目录或活不过守卫就停。
+
+    **绝不删除用户数据目录本体**（桌面/文档/下载…）：整理把桌面搬空后
+    回滚时若无条件 rmdir，会把用户的 Desktop 目录本身删掉。
+    """
+    protected = {guard._norm(p) for p in guard._user_data_dirs()}
     node = path
     while node != node.parent:  # 到盘符根为止，绝不越界
+        if guard._norm(node) in protected:
+            return
         try:
             if any(node.iterdir()):
                 return
@@ -131,9 +154,13 @@ def _apply_one(
 
     jid = jref.ensure()
     try:
-        journal.log(jid, seq, "move", str(src), str(final_dst), "start")
+        # 动盘前先记下原始时间戳：桌面按"修改日期"排序时，时间戳就是排序键。
+        # 跨卷移动会走 copy2，mtime/atime 虽保留，但回滚同样要复原，所以一律记录。
+        st = src.stat()
+        stamp = {"mtime_ns": st.st_mtime_ns, "atime_ns": st.st_atime_ns, "size": st.st_size}
+        journal.log(jid, seq, "move", str(src), str(final_dst), "start", extra=stamp)
         shutil.move(str(src), str(final_dst))
-        journal.log(jid, seq, "move", str(src), str(final_dst), "done")
+        journal.log(jid, seq, "move", str(src), str(final_dst), "done", extra=stamp)
     except Exception as exc:  # noqa: BLE001 - 单条失败不能中断整批
         try:
             journal.log(jid, seq, "move", str(src), str(final_dst), "failed", error=str(exc))
@@ -255,6 +282,7 @@ def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecRes
             _ensure_parents(src_path.parent, dry_run=False, allow_user_dirs=allow_user_dirs)
             journal.log(new_id_, seq, "rollback", dst, src, "start")
             shutil.move(dst, src)
+            _restore_stamp(src_path, record)
             journal.log(new_id_, seq, "rollback", dst, src, "done")
             result.rolled_back += 1
             # 回滚后把因本次移动而变空的目录链清掉，别在桌面留一堆空壳

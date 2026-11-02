@@ -81,3 +81,10 @@ def test_user_dir_permission_switch_is_wired():
     assert '$("btnPermit").onclick' in html, "开关没有绑定点击"
     assert "set_allow_user_dirs" in html, "开关没有调用后端持久化接口"
     assert "settings()" in html, "界面启动时没有读取开关状态"
+
+
+def test_rollback_log_mentions_timestamps_restored():
+    """回滚后必须告诉用户"排序也回来了"，否则用户仍会担心图标顺序被打乱。"""
+    html = _html()
+    assert "修改时间" in html, "回滚提示没有说明时间戳已还原"
+    assert "排序" in html, "回滚提示没有说明排序会复原"
