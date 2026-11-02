@@ -1,0 +1,56 @@
+# .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyc
+*.pyd
+*.so
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
+
+# 打包产物
+*.spec.bak
+*.exe
+*.msi
+
+# 沙箱与测试产物（绝不入库）
+sandbox/
+logs/
+*.log
+*.jsonl.tmp
+
+# 证据目录里的原始大文件（保留 txt 摘要）
+evidence/*.bin
+evidence/*.zip
+evidence/*.png
+
+# 模型权重与缓存（本地优先方案的占位）
+models/
+weights/
+.cache/
+*.onnx
+*.gguf
+*.safetensors
+
+# 环境与凭据
+.env
+.env.*
+*.local
+credentials*
+*secret*
+*token*
+
+# 编辑器
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
