@@ -93,3 +93,25 @@ def test_journals_empty(
     monkeypatch.setenv("DESKTOP_ORGANIZER_JOURNAL_DIR", str(tmp_path / "journals"))
     rc = cli.main(["journals"])
     assert rc == 0
+
+
+def test_allow_user_dirs_flag_is_parsed() -> None:
+    args = cli.build_parser().parse_args(["apply", "--allow-user-dirs"])
+    assert args.allow_user_dirs is True
+    assert cli._permitted(args) is True
+
+
+def test_permission_falls_back_to_persisted_setting(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from desktop_organizer import settings
+
+    pref = tmp_path / "settings.json"
+    monkeypatch.setattr(settings, "settings_path", lambda path=None: pref)
+
+    args = cli.build_parser().parse_args(["apply"])
+    assert args.allow_user_dirs is False
+    assert cli._permitted(args) is False  # 默认拒绝
+
+    settings.set_allow_user_dirs(True)
+    assert cli._permitted(args) is True  # 界面里打开过 -> 自动生效

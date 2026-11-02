@@ -316,3 +316,74 @@ def test_rollback_keeps_directory_that_still_has_files(tmp_path):
     executor.rollback(done.journal_id)
 
     assert (out / "keep.txt").is_file()
+
+
+# ---------- 用户目录写盘许可（桌面整理的真正入口）----------
+# 这里用 fake_desktop 夹具把 tmp_path 伪装成"桌面"，见 conftest.py：
+# 真实桌面永远是只读样本，绝不参与任何写盘测试。
+
+
+def test_user_dir_write_is_denied_by_default(fake_desktop):
+    """默认必须拒绝：用户没在界面上点头之前，一条都不能动。"""
+    src = fake_desktop / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = fake_desktop / "文档" / "重要" / "a.txt"
+
+    result = executor.execute(_plan(fake_desktop, [_act("1", src, dst)]), dry_run=False)
+
+    assert result.applied == 0 and result.failed == 1
+    assert src.is_file()
+    assert not (fake_desktop / "文档").exists()
+    assert any("用户数据目录" in e for e in result.errors)
+
+
+def test_user_dir_write_allowed_when_explicitly_enabled(fake_desktop):
+    """用户显式打开开关后，同样的计划就能真移动。"""
+    src = fake_desktop / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = fake_desktop / "文档" / "重要" / "a.txt"
+
+    result = executor.execute(
+        _plan(fake_desktop, [_act("1", src, dst)]), dry_run=False, allow_user_dirs=True
+    )
+
+    assert result.applied == 1 and result.failed == 0
+    assert dst.is_file()
+    assert not src.exists()
+
+
+def test_user_dir_dry_run_still_reports_zero_side_effects(fake_desktop):
+    """开关打开也只预览时，盘上不能有任何变化。"""
+    src = fake_desktop / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = fake_desktop / "文档" / "a.txt"
+
+    result = executor.execute(
+        _plan(fake_desktop, [_act("1", src, dst)]), dry_run=True, allow_user_dirs=True
+    )
+
+    assert result.applied == 1
+    assert result.journal_id == ""
+    assert src.is_file()
+    assert not (fake_desktop / "文档").exists()
+
+
+def test_rollback_of_user_dir_move_needs_the_same_permission(fake_desktop):
+    """回滚也是写盘，同样必须过许可；打开后必须能还原。"""
+    src = fake_desktop / "a.txt"
+    src.write_text("x", encoding="utf-8")
+    dst = fake_desktop / "文档" / "a.txt"
+
+    done = executor.execute(
+        _plan(fake_desktop, [_act("1", src, dst)]), dry_run=False, allow_user_dirs=True
+    )
+    assert dst.is_file()
+
+    blocked = executor.rollback(done.journal_id)
+    assert blocked.rolled_back == 0
+    assert dst.is_file()          # 没许可就原地不动
+
+    back = executor.rollback(done.journal_id, allow_user_dirs=True)
+    assert back.rolled_back == 1
+    assert src.is_file()
+    assert not dst.exists()

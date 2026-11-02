@@ -69,3 +69,15 @@ def test_no_external_network_resources():
     html = _html()
     for pat in ("http://", "https://", "//cdn.", "src=\"//"):
         assert pat not in html, f"界面出现了外部资源引用: {pat}"
+
+
+def test_user_dir_permission_switch_is_wired():
+    """写盘许可必须能在界面上打开/关闭，且开关状态来自后端。
+
+    这是"用户报无法移动"那个问题的正解：开关不接上，用户就只能看到一屏拒绝。
+    """
+    html = _html()
+    assert 'id="btnPermit"' in html, "缺少写盘许可开关控件"
+    assert '$("btnPermit").onclick' in html, "开关没有绑定点击"
+    assert "set_allow_user_dirs" in html, "开关没有调用后端持久化接口"
+    assert "settings()" in html, "界面启动时没有读取开关状态"

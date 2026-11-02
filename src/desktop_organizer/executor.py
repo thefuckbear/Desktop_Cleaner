@@ -33,7 +33,7 @@ def _unique_dst(dst: Path) -> Path:
     raise OSError(f"目标目录内同名文件过多，放弃: {dst}")
 
 
-def _ensure_parents(dst_dir: Path, *, dry_run: bool) -> None:
+def _ensure_parents(dst_dir: Path, *, dry_run: bool, allow_user_dirs: bool | None = None) -> None:
     """逐级校验并（非 dry-run 时）创建缺失目录。"""
     chain: list[Path] = []
     node = dst_dir
@@ -44,7 +44,7 @@ def _ensure_parents(dst_dir: Path, *, dry_run: bool) -> None:
             break
         node = parent
     for item in reversed(chain):
-        guard.assert_safe(item)   # 每一级都过守卫，防止中间层被重定向到禁区
+        guard.assert_safe(item, allow_user_dirs=allow_user_dirs)   # 每一级都过守卫
         if not dry_run:
             item.mkdir(exist_ok=True)
 
@@ -68,7 +68,7 @@ class _JournalRef:
         return self.id
 
 
-def _prune_empty_dirs(path: Path) -> None:
+def _prune_empty_dirs(path: Path, *, allow_user_dirs: bool | None = None) -> None:
     """回滚后清掉因本次移动而变空的目录链；遇到非空目录或活不过守卫就停。"""
     node = path
     while node != node.parent:  # 到盘符根为止，绝不越界
@@ -78,14 +78,21 @@ def _prune_empty_dirs(path: Path) -> None:
         except OSError:
             return
         try:
-            guard.assert_safe(node)
+            guard.assert_safe(node, allow_user_dirs=allow_user_dirs)
             node.rmdir()
         except (GuardError, OSError):
             return
         node = node.parent
 
 
-def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int) -> str:
+def _apply_one(
+    action: PlanAction,
+    *,
+    dry_run: bool,
+    jref: _JournalRef,
+    seq: int,
+    allow_user_dirs: bool | None = None,
+) -> str:
     """执行单条动作。返回空字符串表示成功，否则返回错误描述。"""
     if action.kind not in _VALID_KINDS:
         return f"[{action.action_id}] 不支持的动作类型: {action.kind!r}（只允许 move）"
@@ -94,8 +101,8 @@ def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int
     dst = Path(action.dst)
 
     try:
-        guard.assert_safe(src)
-        guard.assert_safe(dst)
+        guard.assert_safe(src, allow_user_dirs=allow_user_dirs)
+        guard.assert_safe(dst, allow_user_dirs=allow_user_dirs)
     except GuardError as exc:
         return f"[{action.action_id}] {exc}"
 
@@ -103,7 +110,7 @@ def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int
         return f"[{action.action_id}] 源文件不存在或不是普通文件: {src}"
 
     try:
-        _ensure_parents(dst.parent, dry_run=dry_run)
+        _ensure_parents(dst.parent, dry_run=dry_run, allow_user_dirs=allow_user_dirs)
     except GuardError as exc:
         return f"[{action.action_id}] {exc}"
     except OSError as exc:
@@ -113,7 +120,7 @@ def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int
     try:
         if not dry_run:
             final_dst = _unique_dst(dst)
-            guard.assert_safe(final_dst)
+            guard.assert_safe(final_dst, allow_user_dirs=allow_user_dirs)
     except GuardError as exc:
         return f"[{action.action_id}] {exc}"
     except OSError as exc:
@@ -136,8 +143,17 @@ def _apply_one(action: PlanAction, *, dry_run: bool, jref: _JournalRef, seq: int
     return ""
 
 
-def execute(plan: Plan, dry_run: bool = True) -> ExecResult:
-    """执行计划。``dry_run`` 默认 True，只有显式传 False 才会真正动盘。"""
+def execute(
+    plan: Plan,
+    dry_run: bool = True,
+    *,
+    allow_user_dirs: bool | None = None,
+) -> ExecResult:
+    """执行计划。``dry_run`` 默认 True，只有显式传 False 才会真正动盘。
+
+    ``allow_user_dirs`` 是用户级写盘许可（默认 None = 走 constants 的 False）。
+    它由 bridge 从 settings.json 读出来传进来 —— 用户不点头，桌面文件一条都不动。
+    """
     result = ExecResult()
     if not plan.actions:
         result.ok = True
@@ -146,7 +162,9 @@ def execute(plan: Plan, dry_run: bool = True) -> ExecResult:
     jref = _JournalRef(plan.root)
 
     for seq, action in enumerate(plan.actions, start=1):
-        error = _apply_one(action, dry_run=dry_run, jref=jref, seq=seq)
+        error = _apply_one(
+            action, dry_run=dry_run, jref=jref, seq=seq, allow_user_dirs=allow_user_dirs
+        )
         if error:
             result.failed += 1
             result.errors.append(error)
@@ -155,22 +173,30 @@ def execute(plan: Plan, dry_run: bool = True) -> ExecResult:
 
     result.journal_id = jref.id
     result.ok = result.failed == 0
-    _explain_blanket_rejection(plan, result)
+    _explain_blanket_rejection(plan, result, allow_user_dirs=allow_user_dirs)
     return result
 
 
-def _explain_blanket_rejection(plan: Plan, result: ExecResult) -> None:
+def _explain_blanket_rejection(
+    plan: Plan, result: ExecResult, *, allow_user_dirs: bool | None = None
+) -> None:
     """一条都没动且全被守卫拦下时，补一句人话，别让用户只看到一屏报错。"""
     if result.applied or result.failed != len(plan.actions):
         return
-    verdicts = [guard.check_path(a.dst) for a in plan.actions]
+    verdicts = [guard.check_path(a.dst, allow_user_dirs=allow_user_dirs) for a in plan.actions]
     blocked = [v for v in verdicts if not v.allowed]
     if len(blocked) != len(verdicts):
         return
+    if blocked[0].tier == "userdir":
+        result.errors.append(
+            f"没有执行任何移动：全部 {len(plan.actions)} 条目标都在用户目录里，"
+            "而写盘白名单当前不含用户目录（桌面/文档/下载…）。"
+            "如果确实要整理这些目录，请先在界面右上角打开「允许写入用户目录」开关，再点一次执行。"
+        )
+        return
     result.errors.append(
         f"没有执行任何移动：全部 {len(plan.actions)} 条目标都被安全守卫拒绝（{blocked[0].reason}）。"
-        "写盘白名单目前只有项目根，真实桌面等用户目录默认禁止写入；"
-        "确认要整理真实目录时，需要显式放开用户目录写入（constants.ALLOW_USER_DIRS）。"
+        "系统目录与磁盘根目录永久禁止写入，任何白名单开关都不会放行它们。"
     )
 
 
@@ -185,8 +211,11 @@ def _rollback_targets(records: list[dict]) -> list[dict]:
     return done + started
 
 
-def rollback(journal_id: str) -> ExecResult:
-    """按日志倒序把文件移回原处。源位置已被占用时跳过，绝不覆盖。"""
+def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecResult:
+    """按日志倒序把文件移回原处。源位置已被占用时跳过，绝不覆盖。
+
+    回滚同样是写盘，因此和 execute 一样需要写盘许可。
+    """
     result = ExecResult()
     records = journal.load(journal_id)
     targets = _rollback_targets(records)
@@ -205,8 +234,8 @@ def rollback(journal_id: str) -> ExecResult:
             result.errors.append(f"[seq={record.get('seq')}] 日志记录缺少 src/dst")
             continue
         try:
-            guard.assert_safe(Path(src))
-            guard.assert_safe(Path(dst))
+            guard.assert_safe(Path(src), allow_user_dirs=allow_user_dirs)
+            guard.assert_safe(Path(dst), allow_user_dirs=allow_user_dirs)
         except GuardError as exc:
             result.failed += 1
             result.errors.append(f"[seq={record.get('seq')}] {exc}")
@@ -223,13 +252,13 @@ def rollback(journal_id: str) -> ExecResult:
             continue
 
         try:
-            _ensure_parents(src_path.parent, dry_run=False)
+            _ensure_parents(src_path.parent, dry_run=False, allow_user_dirs=allow_user_dirs)
             journal.log(new_id_, seq, "rollback", dst, src, "start")
             shutil.move(dst, src)
             journal.log(new_id_, seq, "rollback", dst, src, "done")
             result.rolled_back += 1
             # 回滚后把因本次移动而变空的目录链清掉，别在桌面留一堆空壳
-            _prune_empty_dirs(dst_path.parent)
+            _prune_empty_dirs(dst_path.parent, allow_user_dirs=allow_user_dirs)
         except Exception as exc:  # noqa: BLE001
             result.failed += 1
             result.errors.append(f"[seq={record.get('seq')}] 回滚失败: {exc}")

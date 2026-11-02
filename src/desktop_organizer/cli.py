@@ -197,9 +197,19 @@ def cmd_apply(args: argparse.Namespace) -> int:
         print("拒绝执行：--no-dry-run 必须同时给出 --yes（防止误操作）。", file=sys.stderr)
         return 4
 
-    result = _load_executor().execute(plan, dry_run=dry_run)
+    result = _load_executor().execute(
+        plan, dry_run=dry_run, allow_user_dirs=_permitted(args)
+    )
     _print_result(result, dry_run=dry_run)
     return 0 if result.ok or dry_run else 1
+
+
+def _permitted(args: argparse.Namespace) -> bool:
+    """写用户目录的许可：命令行显式给开关，或用户之前在界面里打开过。"""
+    if getattr(args, "allow_user_dirs", False):
+        return True
+    from . import settings
+    return settings.allow_user_dirs()
 
 
 def _print_result(result: Any, *, dry_run: bool) -> None:
@@ -228,7 +238,7 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         journal_id = ids[-1]
         print(f"未指定 --journal，使用最近一次：{journal_id}")
 
-    result = executor.rollback(journal_id)
+    result = executor.rollback(journal_id, allow_user_dirs=_permitted(args))
     print(f"\n[回滚 {journal_id}]")
     print(f"  已恢复={result.rolled_back}  skipped={result.skipped}  failed={result.failed}")
     for e in result.errors[:20]:
@@ -292,10 +302,14 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--plan-file", default="", help="从 plan 保存的 JSON 执行")
     sp.add_argument("--no-dry-run", action="store_true", help="真正写盘（必须同时给 --yes）")
     sp.add_argument("--yes", action="store_true", help="确认执行")
+    sp.add_argument("--allow-user-dirs", action="store_true",
+                    help="允许写入桌面/文档等用户目录（默认关闭；界面里打开过则自动生效）")
     sp.set_defaults(func=cmd_apply)
 
     sp = sub.add_parser("rollback", help="回滚一次执行")
     sp.add_argument("--journal", default="", help="journal id，缺省用最近一次")
+    sp.add_argument("--allow-user-dirs", action="store_true",
+                    help="允许从用户目录回滚（默认关闭；界面里打开过则自动生效）")
     sp.set_defaults(func=cmd_rollback)
 
     sp = sub.add_parser("journals", help="列出历史执行日志")

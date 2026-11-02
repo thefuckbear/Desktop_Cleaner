@@ -106,3 +106,57 @@ def test_bridge_journals_lists_history(tmp_path: Path) -> None:
     payload = b.journals()
     json.dumps(payload)
     assert payload["total"] >= 1
+
+
+# ---------- 写盘许可开关（前端开关的唯一后端出口）----------
+
+
+def test_bridge_settings_deny_by_default(tmp_path: Path) -> None:
+    b = bridge.Bridge(
+        root=str(tmp_path),
+        store_path=tmp_path / "pref.json",
+        settings_path=tmp_path / "settings.json",
+    )
+    payload = b.settings()
+    json.dumps(payload)
+    assert payload["allow_user_dirs"] is False
+
+
+def test_bridge_set_allow_user_dirs_persists(tmp_path: Path) -> None:
+    settings_file = tmp_path / "settings.json"
+    b = bridge.Bridge(root=str(tmp_path), settings_path=settings_file)
+    assert b.set_allow_user_dirs(True)["allow_user_dirs"] is True
+
+    # 新实例 = 下次启动，必须还记得
+    again = bridge.Bridge(root=str(tmp_path), settings_path=settings_file)
+    assert again.settings()["allow_user_dirs"] is True
+    assert again.set_allow_user_dirs(False)["allow_user_dirs"] is False
+    assert bridge.Bridge(root=str(tmp_path), settings_path=settings_file).settings()["allow_user_dirs"] is False
+
+
+def test_bridge_apply_uses_the_persisted_permission(fake_desktop: Path) -> None:
+    """开关关着时一条都不动；打开后同样的计划就能真移动。"""
+    _make(fake_desktop, ["a.png", "b.pdf"])
+    settings_file = fake_desktop / "settings.json"
+    b = bridge.Bridge(
+        root=str(fake_desktop),
+        depth=1,
+        store_path=fake_desktop / "pref.json",
+        settings_path=settings_file,
+    )
+    b.scan()
+    b.plan()
+
+    blocked = b.apply(dry_run=False)
+    assert blocked["applied"] == 0
+    assert (fake_desktop / "a.png").is_file()
+    assert any("用户目录" in e for e in blocked["errors"])
+
+    b.set_allow_user_dirs(True)
+    done = b.apply(dry_run=False)
+    assert done["applied"] == 2
+    assert not (fake_desktop / "a.png").exists()
+
+    back = b.rollback()
+    assert back["rolled_back"] == 2
+    assert (fake_desktop / "a.png").is_file()

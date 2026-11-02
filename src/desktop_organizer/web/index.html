@@ -66,6 +66,21 @@
   }
   .rootbox b{color:var(--cyan); font-weight:600}
   .dot{width:7px;height:7px;border-radius:50%;background:var(--ok);box-shadow:0 0 10px var(--ok);flex:none}
+  /* 写盘许可开关：默认关闭，用户亲手点亮才允许写用户目录 */
+  .permit{
+    font:inherit; font-size:11.5px; padding:6px 12px; border-radius:10px; cursor:pointer;
+    display:inline-flex; align-items:center; gap:7px; flex:none; width:auto; white-space:nowrap;
+    background:rgba(255,255,255,.05); color:var(--dim);
+    border:1px solid var(--glass-brd); transition:.16s;
+  }
+  .permit .led{
+    width:7px;height:7px;border-radius:50%;background:#5b6275;flex:none;transition:.16s;
+  }
+  .permit:hover{background:rgba(109,94,252,.16); color:#d8d3ff}
+  .permit.on{
+    background:rgba(34,211,238,.14); color:#a5f3fc; border-color:rgba(34,211,238,.42);
+  }
+  .permit.on .led{background:var(--cyan); box-shadow:0 0 10px var(--cyan)}
 
   /* ---- 主区 ---- */
   main{flex:1; display:grid; grid-template-columns:1fr 296px; gap:14px; min-height:0}
@@ -245,6 +260,9 @@
       <h1>Desktop Organizer</h1>
       <div class="sub">AI 给建议 · 人来拍板 · 每一步都能回滚</div>
     </div>
+    <button class="permit" id="btnPermit" title="默认关闭：不加锁就不能整理真实桌面">
+      <span class="led"></span><span id="permitText">用户目录写入：关</span>
+    </button>
     <div class="rootbox"><span class="dot"></span>根目录&nbsp;<b id="rootText">—</b></div>
   </header>
 
@@ -533,6 +551,38 @@ async function saveEdit(){
   }catch(err){ log(`保存失败：${err}`, "bad"); }
 }
 
+// ---------- 写盘许可（默认关闭，用户亲手点亮） ----------
+let permitOn = false;
+
+function paintPermit(){
+  const btn = $("btnPermit");
+  btn.classList.toggle("on", permitOn);
+  $("permitText").textContent = permitOn ? "用户目录写入：开" : "用户目录写入：关";
+  btn.title = permitOn
+    ? "已允许写入桌面等用户目录，执行前请再确认一遍勾选项"
+    : "默认关闭：不加锁就不能整理真实桌面";
+}
+
+async function refreshPermit(){
+  try{
+    const res = await api.settings();
+    permitOn = !!(res && res.allow_user_dirs);
+    paintPermit();
+    if (!permitOn) log("写盘许可：关闭（只能预览，不能真正移动）", "warn");
+  }catch(err){ log(`读取设置失败：${err}`, "bad"); }
+}
+
+async function togglePermit(){
+  const next = !permitOn;
+  if (next && !confirm("打开后，执行移动会真的改动桌面文件。\n回滚可用，但仍建议先只勾一个类别试水。\n\n确定要打开吗？")) return;
+  try{
+    const res = await api.set_allow_user_dirs(next);
+    permitOn = !!(res && res.allow_user_dirs);
+    paintPermit();
+    log(permitOn ? "写盘许可：已打开，可以执行移动了" : "写盘许可：已关闭，执行会被拦截", permitOn ? "ok" : "warn");
+  }catch(err){ log(`切换许可失败：${err}`, "bad"); }
+}
+
 // ---------- 绑定 ----------
 $("btnScan").onclick = scan;
 $("btnPlan").onclick = plan;
@@ -548,6 +598,7 @@ $("btnSelNone").onclick = () => {
   render();
 };
 $("mCancel").onclick = () => $("modal").classList.remove("on");
+$("btnPermit").onclick = togglePermit;
 $("mSave").onclick = saveEdit;
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) $("modal").classList.remove("on"); });
 document.addEventListener("keydown", (e) => {
@@ -566,10 +617,12 @@ $("mImp").addEventListener("change", () => {
 if (window.pywebview && window.pywebview.api){
   api = window.pywebview.api;
   log("界面就绪，等待扫描。");
+  refreshPermit();
 }else{
   window.addEventListener("pywebviewready", () => {
     api = window.pywebview.api;
     log("界面就绪，等待扫描。");
+    refreshPermit();
   });
 }
 </script>

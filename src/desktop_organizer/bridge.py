@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-from . import executor, journal, planner, scanner
+from . import executor, journal, planner, scanner, settings
 from .model import FileItem, Plan, PlanAction, Proposal
 from .store import PreferenceStore
 
@@ -45,13 +45,26 @@ class Bridge:
         root: str | None = None,
         depth: int = 1,
         store_path: str | Path | None = None,
+        settings_path: str | Path | None = None,
     ) -> None:
         self.root = str(root) if root else os.path.expanduser("~\\Desktop")
         self.depth = max(0, int(depth))
         self.store = PreferenceStore(store_path)
+        self._settings_path = settings_path
         self._items: list[FileItem] = []
         self._plan: Plan | None = None
         self._last_journal = ""
+
+    # ---------- 设置（写盘许可）----------
+
+    def settings(self) -> dict[str, Any]:
+        """给前端读当前设置。目前只有"是否允许写用户目录"。"""
+        return settings.as_dict(self._settings_path)
+
+    def set_allow_user_dirs(self, value: bool) -> dict[str, Any]:
+        """用户在界面上亲手打开/关闭写盘许可，立即落盘，下次启动仍生效。"""
+        settings.set_allow_user_dirs(value is True, path=self._settings_path)
+        return self.settings()
 
     # ---------- 只读 ----------
 
@@ -99,7 +112,9 @@ class Bridge:
                 plan,
                 actions=[a for a in plan.actions if a.action_id in wanted],
             )
-        result = executor.execute(plan, dry_run=dry_run)
+        result = executor.execute(
+            plan, dry_run=dry_run, allow_user_dirs=self._permitted()
+        )
         payload = result.to_dict()
         payload["dry_run"] = bool(dry_run)
         if result.journal_id:
@@ -114,7 +129,11 @@ class Bridge:
             target = ids[-1] if ids else ""
         if not target:
             return {"ok": False, "rolled_back": 0, "errors": ["没有可回滚的执行记录"]}
-        return executor.rollback(target).to_dict()
+        return executor.rollback(target, allow_user_dirs=self._permitted()).to_dict()
+
+    def _permitted(self) -> bool:
+        """每次写盘前现读设置，不缓存：用户刚关掉开关就得立刻生效。"""
+        return settings.allow_user_dirs(self._settings_path)
 
     def journals(self) -> dict[str, Any]:
         ids = journal.list_journals()
