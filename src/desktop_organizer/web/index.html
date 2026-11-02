@@ -114,6 +114,33 @@
   .mini:hover:not(:disabled){background:rgba(109,94,252,.20); color:#d8d3ff; border-color:rgba(109,94,252,.42)}
   .mini:disabled{opacity:.4; cursor:not-allowed}
 
+  /* ---- 搜索 / 排序工具条 ---- */
+  .tools{
+    display:flex; align-items:center; gap:8px; padding:9px 16px; flex:none;
+    border-bottom:1px solid rgba(255,255,255,.05);
+  }
+  .tools .search{
+    flex:1; min-width:0; display:flex; align-items:center; gap:7px;
+    padding:5px 10px; border-radius:9px;
+    background:rgba(255,255,255,.045); border:1px solid var(--glass-brd);
+    transition:.16s;
+  }
+  .tools .search:focus-within{
+    border-color:rgba(109,94,252,.55); background:rgba(109,94,252,.10);
+  }
+  .tools .search svg{width:13px; height:13px; flex:none; color:var(--mute)}
+  .tools .search input{
+    flex:1; min-width:0; background:none; border:0; outline:none; color:var(--fg);
+    font:inherit; font-size:12px; padding:0;
+  }
+  .tools .search input::placeholder{color:var(--mute)}
+  .tools select{
+    font:inherit; font-size:11.5px; padding:5px 8px; border-radius:9px; cursor:pointer;
+    background:rgba(255,255,255,.045); color:var(--dim);
+    border:1px solid var(--glass-brd); outline:none; flex:none; width:auto;
+  }
+  .tools select:hover{background:rgba(109,94,252,.16); color:#d8d3ff}
+
   /* ---- 文件表 ---- */
   .thead,.row{
     display:grid; grid-template-columns:26px 1fr 74px 92px 64px 26px;
@@ -276,6 +303,19 @@
         <button class="mini" id="btnSelNone" disabled>全不选</button>
         <span class="count" id="selText">已选 0</span>
       </div>
+      <div class="tools">
+        <div class="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+          <input id="q" type="search" placeholder="按文件名搜索…" autocomplete="off" spellcheck="false">
+        </div>
+        <select id="sortBy" title="排序方式">
+          <option value="name">文件名 A→Z</option>
+          <option value="name-desc">文件名 Z→A</option>
+          <option value="mtime-desc">修改时间 新→旧</option>
+          <option value="mtime">修改时间 旧→新</option>
+          <option value="size-desc">大小 大→小</option>
+        </select>
+      </div>
       <div class="thead">
         <span></span><span>文件</span><span>类别</span><span>重要度</span><span>置信度</span><span></span>
       </div>
@@ -361,7 +401,7 @@ const CATS = ["图片","文档","表格","演示","PDF","音视频","压缩包",
 const IMP_LABEL = {high:"重要", medium:"常用", low:"归档"};
 
 const $ = (id) => document.getElementById(id);
-const state = { rows: [], selected: new Set(), planned: false, lastJournal: "" };
+const state = { rows: [], selected: new Set(), planned: false, lastJournal: "", query: "", sort: "name" };
 let api = null;
 
 function log(msg, kind){
@@ -388,6 +428,33 @@ function fmtSize(n){
   return `${v.toFixed(i ? 1 : 0)} ${u[i]}`;
 }
 
+function fmtTime(ms){
+  if (!ms) return "";
+  const d = new Date(ms * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// ---------- 过滤与排序 ----------
+/** 当前可见行（受搜索词与排序影响）。选中状态存的是 path，所以过滤不影响已选。 */
+function viewRows(){
+  const q = state.query.trim().toLowerCase();
+  let out = q
+    ? state.rows.filter((r) => String(r.name || "").toLowerCase().includes(q))
+    : state.rows.slice();
+  const byName = (a, b) => String(a.name || "").localeCompare(String(b.name || ""), "zh-CN");
+  const byTime = (a, b) => (a.mtime || 0) - (b.mtime || 0);
+  const bySize = (a, b) => (a.size || 0) - (b.size || 0);
+  const cmp = {
+    "name": byName,
+    "name-desc": (a, b) => byName(b, a),
+    "mtime": byTime,
+    "mtime-desc": (a, b) => byTime(b, a),
+    "size-desc": (a, b) => bySize(b, a),
+  }[state.sort] || byName;
+  return out.sort(cmp);
+}
+
 // ---------- 渲染 ----------
 function render(){
   const list = $("list");
@@ -396,19 +463,35 @@ function render(){
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
         <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
       <div>点击右侧「扫描目录」开始</div></div>`;
+    stats();
     return;
   }
-  list.innerHTML = state.rows.map((r, i) => {
+  const view = viewRows();
+  if (!view.length){
+    list.innerHTML = `<div class="empty">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+        <circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
+      <div>没有匹配「${esc(state.query)}」的文件</div></div>`;
+    stats();
+    return;
+  }
+  list.innerHTML = view.map((r) => {
+    const i = state.rows.indexOf(r);
     const on = state.selected.has(r.path);
     const skip = !!r.skipped_reason && !r.action_id;
     const cls = ["row", on ? "on" : "", skip ? "skip" : ""].filter(Boolean).join(" ");
     const conf = r.confidence || 0;
     const low = conf < 0.55 ? " low" : "";
+    const meta = [
+      r.target_dir || "—",
+      r.size ? fmtSize(r.size) : "",
+      r.mtime ? fmtTime(r.mtime) : "",
+    ].filter(Boolean).join(" · ");
     return `<div class="${cls}" data-i="${i}">
       <div class="cb"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg></div>
       <div class="fname">
         <b title="${esc(r.path)}">${esc(r.name)}</b>
-        <span>${esc(r.target_dir || "—")}${r.size ? " · " + fmtSize(r.size) : ""}</span>
+        <span>${esc(meta)}</span>
       </div>
       <span class="tag">${esc(r.category || "其他")}</span>
       <span class="tag ${r.importance === "high" ? "h" : r.importance === "medium" ? "m" : "l"}">${esc(IMP_LABEL[r.importance] || "归档")}</span>
@@ -424,19 +507,21 @@ function render(){
 function stats(){
   const total = state.rows.length;
   const sel = state.selected.size;
+  const filtered = !!(state.query || "").trim();
+  const shown = filtered ? viewRows().length : total;
   const high = state.rows.filter((r) => r.confidence >= 0.8).length;
   const low = state.rows.filter((r) => r.confidence > 0 && r.confidence < 0.55).length;
   $("stTotal").textContent = total;
   $("stSel").textContent = sel;
   $("stHigh").textContent = high;
   $("stLow").textContent = low;
-  $("cntText").textContent = total;
+  $("cntText").textContent = filtered ? `${shown} / ${total}` : total;
   $("selText").textContent = `已选 ${sel}`;
   $("btnPlan").disabled = total === 0;
   $("btnDry").disabled = sel === 0;
   $("btnRun").disabled = sel === 0;
   $("btnBack").disabled = !state.lastJournal;
-  $("btnSelAll").disabled = total === 0;
+  $("btnSelAll").disabled = shown === 0;
   $("btnSelNone").disabled = sel === 0;
 }
 
@@ -470,17 +555,11 @@ async function plan(){
     const res = await api.plan();
     state.rows = res.rows || [];
     const have = new Set(state.rows.filter((r) => r.action_id).map((r) => r.path));
-    if (!state.planned || !state.selected.size) {
-      // 首次出计划：默认勾选高置信项，低置信留给人工确认
-      state.selected = new Set(
-        state.rows.filter((r) => r.action_id && r.confidence >= 0.55).map((r) => r.path)
-      );
-    } else {
-      state.selected = new Set([...state.selected].filter((p) => have.has(p)));
-    }
+    // 不再默认勾选：勾什么由用户决定。这里只把已经失效的选中项剔掉。
+    state.selected = new Set([...state.selected].filter((p) => have.has(p)));
     state.planned = true;
     if (res.warnings && res.warnings.length) log(res.warnings.join("；"), "warn");
-    log(`计划已生成：${res.total} 个可执行移动，已默认勾选 ${state.selected.size} 个`);
+    log(`计划已生成：${res.total} 个可执行移动；未默认勾选，请用勾选框或「按搜索词全选」逐项确认`);
     render();
   }catch(err){ log(`生成计划失败：${err}`, "bad"); }
 }
@@ -591,13 +670,22 @@ $("btnDry").onclick = () => apply(true);
 $("btnRun").onclick = () => apply(false);
 $("btnBack").onclick = rollback;
 $("btnSelAll").onclick = () => {
-  state.selected = new Set(state.rows.filter((r) => r.action_id).map((r) => r.path));
+  // 只勾当前可见（受搜索影响）的可移动项：搜到哪个类别就批量勾哪个，不会误勾看不见的行
+  viewRows().forEach((r) => { if (r.action_id) state.selected.add(r.path); });
   render();
 };
 $("btnSelNone").onclick = () => {
   state.selected.clear();
   render();
 };
+$("q").addEventListener("input", (e) => { state.query = e.target.value || ""; render(); });
+$("q").addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  e.target.value = "";
+  state.query = "";
+  render();
+});
+$("sortBy").addEventListener("change", (e) => { state.sort = e.target.value; render(); });
 $("mCancel").onclick = () => $("modal").classList.remove("on");
 $("btnPermit").onclick = togglePermit;
 $("mSave").onclick = saveEdit;

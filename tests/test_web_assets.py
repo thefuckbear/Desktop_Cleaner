@@ -88,3 +88,35 @@ def test_rollback_log_mentions_timestamps_restored():
     html = _html()
     assert "修改时间" in html, "回滚提示没有说明时间戳已还原"
     assert "排序" in html, "回滚提示没有说明排序会复原"
+
+
+def test_plan_does_not_precheck_anything():
+    """用户明确要求：扫描后不要默认帮他勾选。
+
+    这条锁住 plan() 里不再出现"按 confidence 自动填充 selected"的老逻辑。
+    """
+    html = _html()
+    assert "confidence >= 0.55" not in html, "计划里又出现了按置信度自动勾选的老逻辑"
+    assert "已默认勾选" not in html, "日志里仍在宣称默认勾选"
+    assert "未默认勾选" in html, "日志没有告诉用户需要自己勾"
+
+
+def test_search_and_sort_controls_exist():
+    """用户要求的"按文件名搜索 + 按修改时间排序"必须真的接到界面上。"""
+    html = _html()
+    assert 'id="q"' in html, "缺少文件名搜索框"
+    assert 'type="search"' in html
+    assert '$("q").addEventListener("input"' in html
+
+    assert 'id="sortBy"' in html, "缺少排序下拉"
+    assert "$(\"sortBy\").addEventListener(\"change\"" in html
+    for key in ("mtime-desc", "mtime", "name", "size-desc"):
+        assert f'value="{key}"' in html, f"排序选项缺少 {key}"
+
+
+def test_rows_keep_index_into_source_array():
+    """排序/过滤后行下标必须回指 state.rows，否则点一行会改到别的文件。"""
+    html = _html()
+    assert "const i = state.rows.indexOf(r)" in html, "行下标没有回指原数组，排序后会点错文件"
+    assert "data-edit=\"${i}\"" in html
+

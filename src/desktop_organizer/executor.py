@@ -14,7 +14,7 @@ import os
 import shutil
 from pathlib import Path
 
-from . import guard, journal
+from . import guard, journal, shellrefresh
 from .model import ExecResult, GuardError, Plan, PlanAction
 
 _VALID_KINDS = frozenset({"move"})
@@ -68,20 +68,74 @@ class _JournalRef:
         return self.id
 
 
+_FILE_WRITE_ATTRIBUTES = 0x0100
+_FILE_SHARE_ALL = 0x00000007
+_OPEN_EXISTING = 3
+_FILE_FLAG_BACKUP_SEMANTICS = 0x02000000
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+
+
+def _set_birthtime_win(path: Path, birthtime_ns: int) -> bool:
+    """用 Win32 ``SetFileTime`` 把创建时间写回去。
+
+    ``os.utime`` 只能改 mtime/atime，改不了创建时间；而桌面若按「创建日期」
+    排序，创建时间就是排序键。跨卷复制会把创建时间刷成"复制那一刻"，
+    所以回滚时必须单独修它。失败返回 False，绝不抛异常。
+    """
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CreateFileW.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, wintypes.LPVOID,
+            wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+        ]
+        kernel32.SetFileTime.argtypes = [
+            wintypes.HANDLE, wintypes.LPVOID, wintypes.LPVOID, wintypes.LPVOID,
+        ]
+        kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+        handle = kernel32.CreateFileW(
+            str(path),
+            _FILE_WRITE_ATTRIBUTES,
+            _FILE_SHARE_ALL,
+            None,
+            _OPEN_EXISTING,
+            _FILE_FLAG_BACKUP_SEMANTICS | _FILE_FLAG_OPEN_REPARSE_POINT,
+            None,
+        )
+        if handle == wintypes.HANDLE(-1).value or handle is None:
+            return False
+        try:
+            # FILETIME = 自 1601-01-01 起的 100ns 数。Unix ns 起点是 1970-01-01，
+            # 两者相差 11644473600 秒。
+            ticks = birthtime_ns // 100 + 116_444_736_000_000_000
+            ft = wintypes.FILETIME(ticks & 0xFFFFFFFF, ticks >> 32)
+            return bool(kernel32.SetFileTime(handle, ctypes.byref(ft), None, None))
+        finally:
+            kernel32.CloseHandle(handle)
+    except Exception:  # noqa: BLE001 - 平台差异/权限不足都不该打断回滚
+        return False
+
+
 def _restore_stamp(path: Path, record: dict) -> None:
     """按日志里的原始时间戳复原文件。
 
     桌面开启「自动排列」时，图标顺序是排序键的纯函数（默认按名称）。
-    若用户改成按「修改日期」排序，mtime 就是排序键 —— 回滚不动它，
-    图标就会跟整理前不一致。复原失败不致命，静默放过（文件已回到原位）。
+    若用户改成按「修改日期」或「创建日期」排序，时间戳就是排序键 ——
+    回滚不动它们，图标就会跟整理前不一致。复原失败不致命，静默放过。
     """
     mtime_ns, atime_ns = record.get("mtime_ns"), record.get("atime_ns")
-    if not isinstance(mtime_ns, int) or not isinstance(atime_ns, int):
-        return
-    try:
-        os.utime(path, ns=(atime_ns, mtime_ns))
-    except OSError:
-        pass
+    if isinstance(mtime_ns, int) and isinstance(atime_ns, int):
+        try:
+            os.utime(path, ns=(atime_ns, mtime_ns))
+        except OSError:
+            pass
+    birthtime_ns = record.get("birthtime_ns")
+    if isinstance(birthtime_ns, int):
+        _set_birthtime_win(path, birthtime_ns)
 
 
 def _prune_empty_dirs(path: Path, *, allow_user_dirs: bool | None = None) -> None:
@@ -157,7 +211,11 @@ def _apply_one(
         # 动盘前先记下原始时间戳：桌面按"修改日期"排序时，时间戳就是排序键。
         # 跨卷移动会走 copy2，mtime/atime 虽保留，但回滚同样要复原，所以一律记录。
         st = src.stat()
+        st = src.stat()
         stamp = {"mtime_ns": st.st_mtime_ns, "atime_ns": st.st_atime_ns, "size": st.st_size}
+        birthtime_ns = getattr(st, "st_birthtime_ns", None)
+        if isinstance(birthtime_ns, int):
+            stamp["birthtime_ns"] = birthtime_ns
         journal.log(jid, seq, "move", str(src), str(final_dst), "start", extra=stamp)
         shutil.move(str(src), str(final_dst))
         journal.log(jid, seq, "move", str(src), str(final_dst), "done", extra=stamp)
@@ -252,6 +310,8 @@ def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecRes
 
     new_id_ = journal.new_journal("")
     result.journal_id = new_id_
+    restored_srcs: list[str] = []
+    roots: set[str] = set()
 
     for seq, record in enumerate(reversed(targets), start=1):
         src = str(record.get("src", ""))
@@ -285,11 +345,18 @@ def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecRes
             _restore_stamp(src_path, record)
             journal.log(new_id_, seq, "rollback", dst, src, "done")
             result.rolled_back += 1
+            restored_srcs.append(str(src_path))
+            roots.add(str(src_path.parent))
             # 回滚后把因本次移动而变空的目录链清掉，别在桌面留一堆空壳
             _prune_empty_dirs(dst_path.parent, allow_user_dirs=allow_user_dirs)
         except Exception as exc:  # noqa: BLE001
             result.failed += 1
             result.errors.append(f"[seq={record.get('seq')}] 回滚失败: {exc}")
 
+    # 让 Explorer 重新枚举：桌面图标位置是排序键的函数，但 shell 会缓存槽位，
+    # 不主动通知时可能停在旧位置，用户看到的就是「回滚了但没回原处」。
+    if restored_srcs:
+        for root in sorted(roots):
+            shellrefresh.notify_after_rollback(root, restored_srcs)
     result.ok = result.failed == 0
     return result
