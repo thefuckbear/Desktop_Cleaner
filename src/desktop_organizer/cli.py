@@ -14,6 +14,20 @@ import os
 import sys
 from typing import Any
 
+def _force_utf8_stdio() -> None:
+    """Windows 管道/重定向下 stdout 默认 cp1252，中文会 UnicodeEncodeError。"""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is None:
+            continue
+        try:
+            reconfigure(encoding="utf-8", errors="replace")
+        except (ValueError, OSError):
+            pass
+
+
+_force_utf8_stdio()
+
 from .constants import (
     APP_NAME,
     APP_VERSION,
