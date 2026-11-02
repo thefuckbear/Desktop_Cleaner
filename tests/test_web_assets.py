@@ -16,6 +16,14 @@ def _html() -> str:
     return INDEX.read_text(encoding="utf-8")
 
 
+def _css_rule(selector: str) -> str:
+    """取某条样式规则的声明体（先剥掉注释，注释里也可能有花括号）。"""
+    css = re.sub(r"/\*.*?\*/", "", _html(), flags=re.S)
+    m = re.search(re.escape(selector) + r"\{([^}]*)\}", css)
+    assert m, f"缺少样式: {selector}"
+    return m.group(1)
+
+
 def test_index_exists():
     assert INDEX.is_file()
 
@@ -36,6 +44,24 @@ def test_selection_shortcuts_are_present():
     assert 'id="btnSelNone"' in html
     assert '$("btnSelAll").onclick' in html
     assert '$("btnSelNone").onclick' in html
+
+
+def test_mini_buttons_override_global_button_width():
+    """全局 button{width:100%} 会把小按钮拉成整行、把标题挤成竖排。
+
+    这条规则一旦被删，界面会静默走样（截图才看得出来），必须测住。
+    """
+    body = _css_rule(".mini")
+    assert "width:auto" in body, ".mini 必须覆盖全局 button 的 width:100%"
+    assert "display:inline-flex" in body
+    assert "flex:none" in body
+    assert "white-space:nowrap" in body
+
+
+def test_panel_header_text_does_not_wrap():
+    """表头标题/计数被挤压时会一字一行，必须 nowrap。"""
+    assert "white-space:nowrap" in _css_rule(".panel-hd h2")
+    assert "white-space:nowrap" in _css_rule(".count")
 
 
 def test_no_external_network_resources():

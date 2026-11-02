@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 APP_NAME = "Desktop Organizer"
@@ -26,9 +27,29 @@ IMPORTANCE_DIRS = {"high": "重要", "medium": "常用", "low": "归档"}
 IMPORTANCE_ORDER = ("high", "medium", "low")
 
 # ---- 运行期目录 ----
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
+def resolve_project_root(
+    *, frozen: bool, exe_path: Path | None, file_path: Path
+) -> Path:
+    """定位"可写根目录"。
+
+    源码运行：``src/desktop_organizer/constants.py`` 往上两级 = 仓库根。
+    打包运行：``__file__`` 在 PyInstaller 的解压临时目录（``_MEIxxxx``）里，
+    拿它算根会把日志、偏好、写盘白名单全指向临时目录 —— 所以改用 exe 所在目录。
+    """
+    if frozen and exe_path is not None:
+        return Path(exe_path).resolve().parent
+    return Path(file_path).resolve().parents[2]
+
+
+PROJECT_ROOT = resolve_project_root(
+    frozen=bool(getattr(sys, "frozen", False)),
+    exe_path=Path(sys.executable) if getattr(sys, "frozen", False) else None,
+    file_path=Path(__file__),
+)
 SANDBOX_DIR = PROJECT_ROOT / "sandbox"
 EVIDENCE_DIR = PROJECT_ROOT / "evidence"
+LOG_DIR = PROJECT_ROOT / "logs"
+DATA_DIR = PROJECT_ROOT / "data"
 
 def user_home() -> Path:
     return Path(os.environ.get("USERPROFILE") or Path.home())

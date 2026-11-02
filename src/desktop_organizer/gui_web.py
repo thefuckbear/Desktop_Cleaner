@@ -27,6 +27,21 @@ WINDOW_H = 780
 MIN_W = 940
 MIN_H = 640
 
+# WebView2 的 profile 落到 data/webview：不持久化时每次都要重建运行时环境，
+# 实测界面就绪从 835ms 退化到 1916ms（同一台机器、同一个 HTML）。
+WEBVIEW_PROFILE = constants.DATA_DIR / "webview"
+
+
+def start_kwargs() -> dict:
+    """``webview.start`` 的参数。抽成函数是为了能单测，不必真开窗。"""
+    WEBVIEW_PROFILE.mkdir(parents=True, exist_ok=True)
+    return {
+        "gui": "edgechromium",  # 强制 WebView2，避免回落到老的 MSHTML
+        "debug": bool(os.environ.get("DESKTOP_ORGANIZER_DEBUG")),
+        "private_mode": False,
+        "storage_path": str(WEBVIEW_PROFILE),
+    }
+
 
 def _log_file() -> Path:
     path = constants.PROJECT_ROOT / "logs" / "gui.log"
@@ -75,8 +90,8 @@ def run(root: str | None = None, depth: int = 1) -> int:
         return 4
 
     try:
-        # gui='edgechromium'：强制用 WebView2；debug 仅在环境变量里显式开启
-        webview.start(gui="edgechromium", debug=bool(os.environ.get("DESKTOP_ORGANIZER_DEBUG")))
+        # gui='edgechromium'：强制用 WebView2；profile 持久化见 start_kwargs
+        webview.start(**start_kwargs())
     except Exception:  # noqa: BLE001 - 把崩溃原因留档而不是无声退出
         _record(traceback.format_exc())
         return 1
