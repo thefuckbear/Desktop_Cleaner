@@ -1,0 +1,66 @@
+# ai-strategy 测试证据
+# 负责人：ai-strategy       日期：2026-11-02
+# 环境：Windows 11 / Python 3.13.1 / pytest 9.1.1（纯标准库实现，无第三方依赖）
+
+## 1. 运行命令
+
+cd C:\Users\HY\Desktop\Projects\Desktop_Cleaner
+$env:PYTHONPATH="src"; $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'
+python -m pytest tests/test_classify.py tests/test_planner.py tests/test_store.py -q
+
+## 2. 结果
+
+43 passed in 0.26s          （退出码 0）
+
+分文件用例数：
+  tests/test_classify.py   27 passed
+  tests/test_planner.py     9 passed
+  tests/test_store.py       7 passed
+
+## 3. TDD 证据链
+
+RED #1（首次实现前）：
+  命令同上 → 3 errors
+  ModuleNotFoundError: No module named 'desktop_organizer.store'
+  说明：三个测试文件先于实现落盘，模块不存在即失败。
+
+GREEN #1：实现 rules/store/classify/planner 后 → 42 passed
+
+RED #2（回归缺陷，demo 干跑发现 reason 重复）：
+  测试 test_rule_reason_is_not_duplicated 先于修复写好，把 planner._reason 退回旧行为后运行：
+  assert reason.count("rule-installer") == 1
+  E  AssertionError: assert 2 == 1
+  E  where 2 = '命中规则 rule-installer；规则 rule-installer'.count
+
+GREEN #2：_reason 加去重判断后 → 43 passed（新增 1 条回归用例）
+
+静态检查：
+  python -m compileall -q src   → 退出码 0
+
+## 4. 纯计算验证（不碰真实文件）
+
+sandbox\_tmp_demo.py（临时探针，已删除）构造 FileItem 干跑，输出：
+
+  C:\Desktop\文档\重要\报告_终稿.docx | 扩展名 .docx → 文档
+  C:\Desktop\图片\归档\photo.png | 扩展名 .png → 图片
+  C:\Desktop\安装包\归档\setup.exe | 命中规则 rule-installer
+  C:\Desktop\其他\归档\mystery.dat | 未识别的扩展名 .dat；置信度 0.30 低于阈值，暂不自动归类
+  C:\Desktop\图片\重要\微信截图_1.png | 命中规则 rule-screenshot
+  warnings: ['1 个文件置信度低，建议人工确认']
+
+覆盖点核对：
+  [x] 13 类分类全覆盖（test_classify 参数化 13 例）
+  [x] 置信度三档 0.90 / 0.70 / 0.30
+  [x] 改判学习生效（store 偏好 → confidence 0.95，理由「沿用你的历史选择」）
+  [x] 低置信降级（< 0.55 → 其他/归档 + warning）
+  [x] store 损坏恢复（坏 JSON → .bak 隔离，从空开始，不崩溃）
+  [x] 原子写（save 后目录内无 .tmp 残留）
+  [x] 已在目标目录不生成 action
+  [x] 跳过 skipped 条目
+  [x] 用户规则覆盖内置规则（同 id 覆盖 / 新 id 追加）
+  [x] 计划 JSON 可序列化、plan_id 前缀 plan-、created_at ISO 8601
+
+## 5. 未验证项
+
+- 本次未对真实桌面执行任何读写，scanner 采集到的真实 FileItem 未经我这边联调（属 Lead/cli 的集成范围）。
+- 未做性能压测：算法为 O(n·规则数)，万级文件量下预计可接受，但无实测数字。

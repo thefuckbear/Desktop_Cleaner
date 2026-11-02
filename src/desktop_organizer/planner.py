@@ -30,7 +30,7 @@ def _same_dir(left: str, right: str) -> bool:
 
 def _reason(proposal: Proposal, downgraded: bool) -> str:
     parts = list(proposal.reasons) or ["无明确理由"]
-    if proposal.rule_id:
+    if proposal.rule_id and not any(proposal.rule_id in part for part in parts):
         parts.append(f"规则 {proposal.rule_id}")
     if downgraded:
         parts.append(f"置信度 {proposal.confidence:.2f} 低于阈值，暂不自动归类")

@@ -107,11 +107,13 @@ def _read_entry(display_parent: str, entry: os.DirEntry, *, follow_symlinks: boo
 
 def _to_item(entry: _Entry, attrs: int) -> FileItem:
     st = entry.st
-    reason = entry.error if entry.error else _skip_reason(
-        entry.name, attrs, is_dir=entry.is_dir, is_reparse=entry.is_reparse
-    )
-    if entry.error and entry.error.startswith("permission_denied"):
-        reason = "permission_denied"
+    # 读取失败优先：读不到 stat 就谈不上属性判定，直接标注错误原因。
+    # 对外值按契约收敛为两种：permission_denied / error:<类型名>，
+    # 原始 OSError 细节留在 _read_entry 的阶段，避免下游被迫解析自由文本。
+    if entry.error:
+        reason = "permission_denied" if entry.error.startswith("permission_denied") else entry.error
+    else:
+        reason = _skip_reason(entry.name, attrs, is_dir=entry.is_dir, is_reparse=entry.is_reparse)
     return FileItem(
         path=entry.path,
         name=entry.name,

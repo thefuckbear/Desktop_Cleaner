@@ -23,7 +23,7 @@ from .constants import PROJECT_ROOT
 
 _JOURNAL_DIR_ENV = "DESKTOP_ORGANIZER_JOURNAL_DIR"
 _ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
-_VALID_OPS = frozenset({"move", "mkdir"})
+_VALID_OPS = frozenset({"move", "mkdir", "rollback"})
 _VALID_STATUS = frozenset({"start", "done", "failed"})
 
 

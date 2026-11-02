@@ -150,10 +150,9 @@ def test_default_rules_json_roundtrip() -> None:
     assert [r.id for r in rules_from_dicts(payload)] == [r.id for r in DEFAULT_RULES]
 
 
-def test_store_preference_wins_over_rules() -> None:
+def test_store_preference_wins_over_rules(sandbox_dir) -> None:
     """改判学习生效：store 里的选择优先于内置规则。"""
-    path = SANDBOX + r"\classify-pref\preferences.json"
-    store = PreferenceStore(path)
+    store = PreferenceStore(sandbox_dir / "preferences.json")
     item = make("微信截图_20261102.png", age_days=10)
     original = classify(item)
     store.remember(
@@ -175,14 +174,9 @@ def test_store_preference_wins_over_rules() -> None:
     assert "沿用你的历史选择" in " ".join(learned.reasons)
 
 
-def test_user_rule_from_store_overrides_builtin(tmp_path=None) -> None:
+def test_user_rule_from_store_overrides_builtin(sandbox_dir) -> None:
     """用户规则同 id 覆盖内置规则（通过 preferences.json 落盘）。"""
-    import os
-    import uuid
-
-    base = SANDBOX + "\\" + "classify-rule-" + uuid.uuid4().hex[:8]
-    os.makedirs(base, exist_ok=True)
-    path = os.path.join(base, "preferences.json")
+    path = sandbox_dir / "preferences.json"
     with open(path, "w", encoding="utf-8") as fh:
         json.dump(
             {

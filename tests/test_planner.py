@@ -104,7 +104,14 @@ def test_store_preference_drives_plan(store_path: Path) -> None:
     assert plan.warnings == []
 
 
-def test_plan_does_not_touch_filesystem(tmp_path=None) -> None:
+def test_rule_reason_is_not_duplicated() -> None:
+    """demo 干跑发现过 reason 重复拼 rule_id，回归锁死。"""
+    plan = build_plan([item("setup.exe", age_days=1)], ROOT)
+    reason = plan.actions[0].reason
+    assert reason.count("rule-installer") == 1
+
+
+def test_plan_does_not_touch_filesystem() -> None:
     """纯计算：条目路径不存在时也照常出计划。"""
     ghost = item("ghost.png")
     assert not os.path.exists(ghost.path)
