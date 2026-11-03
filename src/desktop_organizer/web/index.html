@@ -498,9 +498,10 @@
           <div class="field">
             <label>服务商</label>
             <select id="aiProvider">
-              <option value="off">关闭（只用本地规则）</option>
+              <option value="deepseek" selected>DeepSeek（默认）</option>
               <option value="gemini">Gemini</option>
               <option value="openai_compatible">OpenAI 兼容网关</option>
+              <option value="off">关闭（只用本地规则）</option>
             </select>
           </div>
           <div class="field">
@@ -508,8 +509,8 @@
             <input id="aiKey" type="password" placeholder="留空则沿用已保存的 key" autocomplete="off">
           </div>
           <div class="field">
-            <label>模型</label>
-            <input id="aiModel" type="text" placeholder="gemini-2.5-flash" autocomplete="off" spellcheck="false">
+            <label>模型（留空用默认）</label>
+            <input id="aiModel" type="text" placeholder="deepseek-chat" autocomplete="off" spellcheck="false">
           </div>
           <div class="field">
             <label>网关地址（仅 https）</label>
@@ -918,7 +919,7 @@ async function bulkMove(){
 // ---------- AI 顾问 ----------
 function paintAI(cfg){
   if (!cfg) return;
-  $("aiProvider").value = cfg.provider || "off";
+  $("aiProvider").value = cfg.provider || "deepseek";
   $("aiModel").value = cfg.model || "";
   $("aiBase").value = cfg.base_url || "";
   $("aiKey").value = "";

@@ -35,7 +35,16 @@ def icon(
 def test_sort_keys_are_listed_with_ids_and_descriptions() -> None:
     keys = layout.sort_keys()
     ids = {k["id"] for k in keys}
-    assert ids == {"system_first", "shortcuts_first", "by_type", "by_category", "by_time", "by_name"}
+    # by_usage 是 2026-11-03 用户要求「按使用频次，最常用的排最右」后新增的键
+    assert ids == {
+        "system_first",
+        "shortcuts_first",
+        "by_type",
+        "by_category",
+        "by_time",
+        "by_usage",
+        "by_name",
+    }
     assert all(k["name"] and k["desc"] for k in keys)
 
 

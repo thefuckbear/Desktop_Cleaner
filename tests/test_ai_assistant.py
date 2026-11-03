@@ -18,11 +18,13 @@ from desktop_organizer.model import FileItem
 # ------------------------------------------------------------------ 配置
 
 
-def test_ai_config_defaults_to_off(tmp_path) -> None:
+def test_ai_config_defaults_to_deepseek(tmp_path) -> None:
+    # 2026-11-03 需求变更：默认顾问改成 DeepSeek（用户手上就有这把钥匙）
     cfg = settings.ai_config(tmp_path / "s.json")
-    assert cfg.provider == "off"
+    assert cfg.provider == "deepseek"
     assert cfg.api_key == ""
-    assert cfg.model
+    assert cfg.resolved_model() == "deepseek-chat"
+    assert cfg.resolved_base_url() == "https://api.deepseek.com"
 
 
 def test_ai_config_roundtrip(tmp_path) -> None:
@@ -43,16 +45,16 @@ def test_ai_config_dict_masks_api_key(tmp_path) -> None:
     assert payload["has_key"] is True
 
 
-def test_corrupt_ai_config_falls_back_to_off(tmp_path) -> None:
+def test_corrupt_ai_config_falls_back_to_default_provider(tmp_path) -> None:
     p = tmp_path / "s.json"
     p.write_text("{not json", encoding="utf-8")
-    assert settings.ai_config(p).provider == "off"
+    assert settings.ai_config(p).provider == "deepseek"
 
 
-def test_unknown_provider_falls_back_to_off(tmp_path) -> None:
+def test_unknown_provider_falls_back_to_default_provider(tmp_path) -> None:
     p = tmp_path / "s.json"
     p.write_text(json.dumps({"ai": {"provider": "chatgpt"}}), encoding="utf-8")
-    assert settings.ai_config(p).provider == "off"
+    assert settings.ai_config(p).provider == "deepseek"
 
 
 # ------------------------------------------------------------------ 脱敏
@@ -247,3 +249,54 @@ def test_payload_includes_custom_folders(tmp_path) -> None:
 
     ai.analyze([_item(tmp_path)], cfg, transport=transport)
     assert seen["custom_folders"] == ["2026财务/票据"]
+
+
+# ------------------------------------------------------------------ DeepSeek 顾问
+
+def test_deepseek_is_the_default_advisor() -> None:
+    assert ai.DEFAULT_PROVIDER == "deepseek"
+    assert "deepseek" in ai.PROVIDERS
+    cfg = ai.AIConfig()
+    assert cfg.resolved_model() == "deepseek-chat"
+    assert cfg.resolved_base_url() == "https://api.deepseek.com"
+
+
+def test_deepseek_reuses_the_openai_compatible_transport(monkeypatch, tmp_path) -> None:
+    seen: dict = {}
+
+    def fake_post(cfg, payload, timeout):
+        seen["url_model"] = cfg.resolved_model()
+        seen["url_base"] = cfg.resolved_base_url()
+        return json.dumps({"suggestions": []})
+
+    monkeypatch.setattr(ai, "_post_openai", fake_post)
+    cfg = ai.AIConfig(provider="deepseek", api_key="k")
+    ai.analyze([_item(tmp_path)], cfg)
+    assert seen["url_model"] == "deepseek-chat"
+    assert seen["url_base"] == "https://api.deepseek.com"
+
+
+def test_deepseek_without_key_degrades_to_local_rules(tmp_path) -> None:
+    sug, degraded, reason = ai.analyze(
+        [_item(tmp_path)], ai.AIConfig(provider="deepseek", api_key="")
+    )
+    assert degraded is True
+    assert "Key" in reason
+    assert sug[0].target_dir
+
+
+def test_user_model_overrides_provider_default() -> None:
+    cfg = ai.AIConfig(provider="deepseek", model="deepseek-reasoner")
+    assert cfg.resolved_model() == "deepseek-reasoner"
+
+
+def test_system_prompt_teaches_how_to_use_the_app_and_gives_strategy() -> None:
+    """顾问不是"目录生成器"：prompt 必须讲清软件用法，并给出整理策略口径。"""
+    prompt = ai._SYSTEM_PROMPT
+    for token in ("用户目录写入", "预览", "回滚", "一键整理图标", "撤销"):
+        assert token in prompt
+    for token in ("顶层", "重要", "归档", "临时/待清", "项目/"):
+        assert token in prompt
+    # 硬约束：不许要文件内容，不许绝对路径
+    assert "看不到文件内容" in prompt
+    assert "绝对路径" in prompt

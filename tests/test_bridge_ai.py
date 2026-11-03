@@ -183,11 +183,16 @@ def test_apply_suggestions_tolerates_unknown_paths(tmp_path) -> None:
     assert res["updated"] == 0
 
 
-def test_ai_config_defaults_to_off(tmp_path) -> None:
+def test_ai_config_defaults_to_deepseek(tmp_path) -> None:
+    """2026-11-03 需求变更（用户 m08212）：默认顾问改为 DeepSeek。
+
+    原来是 ``off``（只用本地规则）；现在默认指向 DeepSeek，没填 Key 时
+    仍然自动降级回本地规则，所以"不需要配置也能用"这个性质没变。
+    """
     b = _bridge(tmp_path)
-    assert b.ai_settings()["provider"] == "off"
+    assert b.ai_settings()["provider"] == "deepseek"
     assert b.ai_settings()["has_key"] is False
 
 
 def test_ai_assistant_exports_config_class() -> None:
-    assert ai_assistant.AIConfig().provider == "off"
+    assert ai_assistant.AIConfig().provider == ai_assistant.DEFAULT_PROVIDER

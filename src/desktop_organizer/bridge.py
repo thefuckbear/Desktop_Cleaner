@@ -246,7 +246,11 @@ class Bridge:
         """
         current = settings.ai_config(self._settings_path)
         cfg = ai_assistant.AIConfig(
-            provider=provider if provider in ai_assistant.PROVIDERS else "off",  # type: ignore[arg-type]
+            provider=(
+                provider
+                if provider in ai_assistant.PROVIDERS
+                else ai_assistant.DEFAULT_PROVIDER
+            ),  # type: ignore[arg-type]
             api_key=api_key or current.api_key,
             base_url=base_url or current.base_url,
             model=model or current.model,

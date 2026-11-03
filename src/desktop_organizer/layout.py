@@ -38,6 +38,7 @@ class DesktopIconInfo:
     ext: str  # 小写，含点，如 ".docx"
     mtime: float
     is_system: bool = False  # 系统命名空间图标（此电脑 / 回收站 / 网络 / 用户目录）
+    usage: int = 0  # 被点开过几次（来自 UserAssist，纯只读；0 = 没记录）
 
 
 @dataclass(frozen=True)
@@ -143,6 +144,11 @@ _SORT_KEYS: tuple[dict[str, str], ...] = (
         "desc": "最近改过的排前面",
     },
     {
+        "id": "by_usage",
+        "name": "按使用频次（常用靠右）",
+        "desc": "Windows 记下的点击次数越少越靠前，最常用的落在最右侧，右手一伸就到",
+    },
+    {
         "id": "by_name",
         "name": "按名称",
         "desc": "同一组内按名称升序（大小写不敏感）",
@@ -214,6 +220,10 @@ def sort_by_keys(
             ordered.sort(key=category_of)
         elif key == "by_time":
             ordered.sort(key=lambda i: -float(i.mtime))
+        elif key == "by_usage":
+            # 常用靠右：次数少的先排，次数多的一路推到最右边（右手一伸就到）。
+            # 没记录的按 0 处理，和"确实从没点过"归于同一档。
+            ordered.sort(key=lambda i: int(i.usage or 0))
         elif key == "by_name":
             ordered.sort(key=_name_key)
     return ordered
@@ -581,9 +591,16 @@ def describe_icon(
 
 def collect_icons() -> list[DesktopIconInfo]:  # pragma: no cover - 真机
     """读出桌面上每个图标并判定身份（只读文件元数据，绝不读内容）。"""
+    from . import usage as usage_mod
+
     roots = desktop_roots()
+    pairs = list(iconpos.iter_items())
+    try:  # 读不到使用频次不该让排版失败，全部按 0 处理
+        used = usage_mod.usage_map([name for name, _, _ in pairs])
+    except Exception:  # noqa: BLE001
+        used = {}
     out: list[DesktopIconInfo] = []
-    for name, x, y in iconpos.iter_items():
+    for name, x, y in pairs:
         info = describe_icon(roots, name)
         out.append(
             DesktopIconInfo(
@@ -596,6 +613,7 @@ def collect_icons() -> list[DesktopIconInfo]:  # pragma: no cover - 真机
                 ext=info.ext,
                 mtime=info.mtime,
                 is_system=info.is_system,
+                usage=int(used.get(name, 0)),
             )
         )
     return out

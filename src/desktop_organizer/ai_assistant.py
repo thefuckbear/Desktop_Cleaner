@@ -19,9 +19,21 @@ from typing import Any, Callable, Iterable, Literal
 from . import targetdir
 from .model import FileItem
 
-Provider = Literal["gemini", "openai_compatible", "off"]
-PROVIDERS: frozenset[str] = frozenset({"gemini", "openai_compatible", "off"})
+Provider = Literal["deepseek", "gemini", "openai_compatible", "off"]
+PROVIDERS: frozenset[str] = frozenset({"deepseek", "gemini", "openai_compatible", "off"})
 
+# 默认顾问换成 DeepSeek：用户手上就有这把钥匙，填个 key 立刻能用，
+# 不用再去申请 Gemini。其余服务商仍然保留，只是要自己填地址。
+DEFAULT_PROVIDER: str = "deepseek"
+DEFAULT_MODELS: dict[str, str] = {
+    "deepseek": "deepseek-chat",
+    "gemini": "gemini-2.5-flash",
+    "openai_compatible": "",
+    "off": "",
+}
+DEFAULT_BASE_URLS: dict[str, str] = {
+    "deepseek": "https://api.deepseek.com",
+}
 DEFAULT_MODEL = "gemini-2.5-flash"
 DEFAULT_CUSTOM_FOLDERS: tuple[str, ...] = (
     "文档/重要",
@@ -31,31 +43,60 @@ DEFAULT_CUSTOM_FOLDERS: tuple[str, ...] = (
 )
 
 _GEMINI_ENDPOINT = "https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+
+# 顾问的职责不只是"给个目录"：它要把这个软件怎么用讲清楚，并且给出能直接照做的整理方案。
 _SYSTEM_PROMPT = (
-    "你是 Windows 桌面整理助手。用户会给出文件元数据（不含内容）。"
-    "请为每个文件建议一个相对子目录，要求：层级清晰、名称简短、"
-    "不要使用绝对路径或盘符，不要包含 .. 上跳。"
-    '只返回 JSON：{"suggestions": [{"path", "target_dir", "category", '
-    '"confidence", "reason"}]}，confidence 为 0~1 的数字。'
+    "你是「Desktop Organizer」内置的桌面整理顾问，服务对象是 Windows 10/11 的单机用户。"
+    "\n\n【你能看到什么】只有文件元数据：路径、文件名、扩展名、字节大小、修改时间。"
+    "你看不到文件内容，也绝不要猜测或索要内容。"
+    "\n【你要做什么】两件事："
+    "\n1) 为每个文件建议一个相对子目录（相对桌面根，不得是绝对路径或盘符，不得含 .. 上跳）。"
+    "\n2) 给出可执行的整理策略说明，告诉用户怎么用这个软件把这批文件收干净。"
+    "\n【整理策略的要求】按用户实际看到的层次来，别堆一层："
+    "\n- 顶层用使用者能一眼看懂的中文类别（文档 / 表格 / 图片 / 音视频 / 安装包 / 压缩包 / 代码 / 其他）；"
+    "\n- 需要区分轻重时加一级（重要 / 常用 / 归档）；"
+    "\n- 项目类资料用「项目/<项目名>」，不要按年份或日期硬套；"
+    "\n- 临时文件统一进「临时/待清」，提醒用户批量处理；"
+    "\n- 同一批里同类文件必须落到同一目录，不要一个进文档、一个进重要，那等于没整理。"
+    "\n【关于本软件的正确用法，可以转述给用户】"
+    "\n- 一切移动默认只预览（dry-run），看到「预览效果」的结果确认无误再真正执行；"
+    "\n- 首次整理真实桌面，需要先在界面右上角打开「用户目录写入」开关；"
+    "\n- 执行后可随时「回滚上一次」，文件、时间戳、图标位置都会还原；"
+    "\n- 只想摆整齐不动文件，用顶栏的「一键整理图标」，并可「撤销整理」；"
+    "\n- 界面左栏按类别筛选、工具栏可按文件名搜索与按时间排序，先筛再勾更省事。"
+    "\n【置信度】只有当你对类别的判断有明确依据时才给 0.8 以上；"
+    "拿不准就给 0.5 上下并说明原因，别硬凑高置信度。"
+    '\n【输出格式】只返回 JSON：{"suggestions": [{"path", "target_dir", "category", '
+    '"confidence", "reason"}]}，confidence 为 0~1 的数字，reason 用一句中文说明依据。'
 )
 
 
 @dataclass(frozen=True)
 class AIConfig:
-    provider: Provider = "off"
+    provider: Provider = "deepseek"
     api_key: str = ""
     base_url: str = ""
-    model: str = DEFAULT_MODEL
+    # 留空表示"用这个服务商的默认模型"，由 resolved_model() 决定；
+    # 这样切换服务商时不会把上一家的模型名带过去。
+    model: str = ""
     custom_folders: list[str] = field(default_factory=lambda: list(DEFAULT_CUSTOM_FOLDERS))
+
+    def resolved_model(self) -> str:
+        """空 model 落回该服务商的默认模型；用户手填优先。"""
+        return self.model.strip() or DEFAULT_MODELS.get(self.provider, "")
+
+    def resolved_base_url(self) -> str:
+        """空 base_url 落回官方地址；用户手填优先（自建/中转网关都走这条）。"""
+        return self.base_url.strip() or DEFAULT_BASE_URLS.get(self.provider, "")
 
     @staticmethod
     def from_dict(data: Any) -> "AIConfig":
         """从 settings.json 里的 dict 恢复；任何不认识的字段都当默认值。"""
         if not isinstance(data, dict):
             return AIConfig()
-        provider = data.get("provider", "off")
+        provider = data.get("provider", DEFAULT_PROVIDER)
         if provider not in PROVIDERS:
-            provider = "off"
+            provider = DEFAULT_PROVIDER
         folders = data.get("custom_folders")
         if not isinstance(folders, list) or not all(isinstance(f, str) for f in folders):
             folders = list(DEFAULT_CUSTOM_FOLDERS)
@@ -63,7 +104,7 @@ class AIConfig:
             provider=provider,  # type: ignore[arg-type]
             api_key=str(data.get("api_key") or ""),
             base_url=str(data.get("base_url") or ""),
-            model=str(data.get("model") or DEFAULT_MODEL),
+            model=str(data.get("model") or ""),
             custom_folders=list(folders),
         )
 
@@ -175,7 +216,7 @@ def analyze(
         return _degrade(item_list, store, "AI 未配置（provider=off）")
     if not cfg.api_key:
         return _degrade(item_list, store, "AI 未配置 API Key")
-    if cfg.provider == "openai_compatible" and not cfg.base_url:
+    if cfg.provider == "openai_compatible" and not cfg.resolved_base_url():
         return _degrade(item_list, store, "OpenAI 兼容模式缺少 Base URL")
 
     known = {os_norm(item.path) for item in item_list}
@@ -293,7 +334,7 @@ def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -
 
 
 def _post_gemini(cfg: AIConfig, payload: dict, timeout: float) -> str:
-    url = _GEMINI_ENDPOINT.format(model=cfg.model, key=cfg.api_key)
+    url = _GEMINI_ENDPOINT.format(model=cfg.resolved_model(), key=cfg.api_key)
     body = json.dumps(
         {
             "system_instruction": {"parts": [{"text": _SYSTEM_PROMPT}]},
@@ -323,11 +364,11 @@ def _extract_gemini_text(raw: str) -> str:
 
 
 def _post_openai(cfg: AIConfig, payload: dict, timeout: float) -> str:
-    base = cfg.base_url.rstrip("/")
+    base = cfg.resolved_base_url().rstrip("/")
     url = f"{base}/chat/completions"
     body = json.dumps(
         {
-            "model": cfg.model,
+            "model": cfg.resolved_model(),
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
             "messages": [
