@@ -16,6 +16,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
@@ -134,12 +135,22 @@ def restore_positions(
     write_position: Callable[[str, int, int], Any],
     get_autoarrange: Callable[[], bool],
     set_autoarrange: Callable[[bool], Any],
+    read_positions: Callable[[], dict[str, tuple[int, int]]] | None = None,
+    make_writer: Callable[[], Callable[[str, int, int], Any]] | None = None,
+    sleep: Callable[[float], Any] | None = None,
+    attempts: int = 10,
+    delay: float = 0.15,
 ) -> dict:
-    """按快照写回坐标。
+    """按快照写回坐标，然后**回读确认**，没压住就重试。
 
     自动排列开着时位置会被 ListView 自己接管，写入等于白写，所以先关掉它。
     关掉后**不再自动打开**：一旦重新打开，Explorer 立刻按排序重排，刚写回去的
     位置全都会再次丢掉——这正是用户抱怨「回滚了还是没回原位」的根因。
+
+    为什么必须回读：文件刚被移回桌面时 Explorer 会异步把新条目插进 ListView，
+    ``LVM_SETITEMPOSITION`` 写下的坐标可能被这波重排覆盖。只邮一次写成功就宣称
+    复原，会得到「少数几个图标跑到别处」这种结果（用户实测过）。因此这里写成
+    「写 → 读 → 不一致就再写」的收敛循环，收敛不了就如实报错。
     """
     wants = plan_restore(snapshot, current_names)
     autoarrange_was_on = False
@@ -159,13 +170,90 @@ def restore_positions(
 
     restored = 0
     skipped = 0
-    for item in wants:
-        try:
-            write_position(item["name"], item["x"], item["y"])
-            restored += 1
-        except Exception as exc:
-            skipped += 1
-            errors.append(f"{item['name']}: {exc}")
+    attempts_used = 1
+    verified: bool | None = None
+    mismatched: list[str] = []
+
+    if not wants:
+        return {
+            "restored": 0,
+            "skipped": 0,
+            "autoarrange_was_on": autoarrange_was_on,
+            "errors": errors,
+            "planned": 0,
+            "verified": True if read_positions else None,
+            "mismatched": [],
+            "attempts_used": 0,
+        }
+
+    def write_all(items: Sequence[dict], writer: Callable[[str, int, int], Any]) -> None:
+        nonlocal restored, skipped
+        for item in items:
+            try:
+                writer(item["name"], item["x"], item["y"])
+                restored += 1
+            except Exception as exc:  # noqa: BLE001
+                skipped += 1
+                errors.append(f"{item['name']}: {exc}")
+
+    write_all(wants, write_position)
+
+    absent: list[str] = []
+    actual: dict[str, tuple[int, int]] = {}
+    if read_positions is not None:
+        pause = sleep or time.sleep
+        snapshot_items: dict = snapshot.get("items") or {}
+        target: dict[str, tuple[int, int]] = {
+            item["name"]: (item["x"], item["y"]) for item in wants
+        }
+        # 快照里所有名字都进目标集：刚被移回桌面的文件，Explorer 可能还没来得及把它
+        # 插进 ListView（current_names 里没有）。一旦它迟到出现，也必须被写回，
+        # 否则会被静默跳过——用户看到的就是「有几个文件跑到别处去了」。
+        for name, pos in snapshot_items.items():
+            target.setdefault(name, (int(pos["x"]), int(pos["y"])))
+
+        for attempt in range(1, max(1, attempts) + 1):
+            attempts_used = attempt
+            try:
+                actual = read_positions()
+            except Exception as exc:  # noqa: BLE001
+                errors.append(f"回读图标坐标失败：{exc}")
+                verified = None
+                break
+            wrong = [
+                name
+                for name, want in target.items()
+                if name in actual and tuple(actual[name]) != want
+            ]
+            pending = [name for name in target if name not in actual]
+            mismatched = wrong
+            verified = not wrong
+            if not wrong and not pending:
+                break
+            if attempt < attempts:
+                pause(delay)
+                fix = wrong + [name for name in pending if name in actual]
+                if fix:
+                    # 每次重试重建 writer：Explorer 可能已经插入了新条目，旧索引会错位
+                    retry_writer = make_writer() if make_writer is not None else write_position
+                    restored = 0
+                    skipped = 0
+                    write_all(
+                        [
+                            {"name": n, "x": target[n][0], "y": target[n][1]}
+                            for n in fix
+                        ],
+                        retry_writer,
+                    )
+        absent = [name for name in target if name not in actual]
+        if absent:
+            errors.append(
+                f"{len(absent)} 个图标尚未出现在桌面上（可能已不在桌面）：{'、'.join(absent[:5])}"
+            )
+        if verified is False and mismatched:
+            errors.append(
+                f"图标位置重试 {attempts_used} 次仍未就位：{'、'.join(mismatched[:8])}"
+            )
 
     return {
         "restored": restored,
@@ -173,6 +261,10 @@ def restore_positions(
         "autoarrange_was_on": autoarrange_was_on,
         "errors": errors,
         "planned": len(wants),
+        "verified": verified,
+        "mismatched": mismatched,
+        "absent": absent,
+        "attempts_used": attempts_used,
     }
 
 
@@ -281,11 +373,15 @@ def iter_items() -> list[tuple[str, int, int]]:
         _kernel32.CloseHandle(hproc)
 
 
+def read_positions_live() -> dict[str, tuple[int, int]]:
+    """当前每个图标的坐标，给「写回后回读校验」用。"""
+    return {name: (x, y) for name, x, y in iter_items()}
+
+
 def get_autoarrange() -> bool:
     """桌面当前是否开着「自动排列图标」（读的是控件样式位，不是注册表）。"""
     lv = desktop_listview()
-    if not lv:
-        return False
+    if not lv:        return False
     style = int(_user32.GetWindowLongW(lv, GWL_STYLE)) & 0xFFFFFFFF
     return bool(style & LVS_AUTOARRANGE)
 

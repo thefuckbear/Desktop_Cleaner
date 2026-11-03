@@ -112,9 +112,10 @@ def test_rollback_restores_positions_from_the_snapshot(tmp_path, monkeypatch) ->
 
     captured: dict = {}
 
-    def _restore(snapshot, *, current_names, write_position, get_autoarrange, set_autoarrange):
+    def _restore(snapshot, *, current_names, write_position, get_autoarrange, set_autoarrange, **_kw):
         captured["snapshot"] = snapshot
         captured["current_names"] = list(current_names)
+        captured["has_verifier"] = _kw.get("read_positions") is not None
         return {
             "restored": 2,
             "skipped": 1,
@@ -131,6 +132,7 @@ def test_rollback_restores_positions_from_the_snapshot(tmp_path, monkeypatch) ->
     assert result.rolled_back == 1
     assert captured["current_names"] == ["x.txt"]
     assert captured["snapshot"]["items"]["x.txt"]["x"] == 0
+    assert captured["has_verifier"] is True, "写回必须带回读校验，否则被 Explorer 覆盖也不会知道"
     assert result.icons is not None
     assert result.icons["restored"] == 2
 

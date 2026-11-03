@@ -119,6 +119,154 @@ def test_restore_positions_survives_write_failure() -> None:
     assert any("explorer 拒绝" in e for e in result["errors"])
 
 
+def test_restore_positions_verifies_by_reading_back() -> None:
+    """写完必须回读确认；Explorer 的异步重排会把坐标覆盖掉，不校验等于没做。"""
+    store: dict[str, tuple[int, int]] = {}
+    snap = iconpos.build_snapshot([("a", 0, 5), ("b", 0, 109)], cell_w=75, cell_h=104)
+
+    def write(name: str, x: int, y: int) -> None:
+        store[name] = (x, y)
+
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a", "b"],
+        write_position=write,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+        read_positions=lambda: dict(store),
+        sleep=lambda seconds: None,
+    )
+    assert result["verified"] is True
+    assert result["mismatched"] == []
+    assert result["attempts_used"] == 1
+
+
+def test_restore_positions_retries_when_explorer_overwrites() -> None:
+    """第一次写被 Explorer 覆盖，第二次写回来 —— 必须自己重试到收敛。"""
+    store: dict[str, tuple[int, int]] = {}
+    snap = iconpos.build_snapshot([("a", 0, 5)], cell_w=75, cell_h=104)
+    writes: list[tuple[str, int, int]] = []
+
+    def write(name: str, x: int, y: int) -> None:
+        writes.append((name, x, y))
+        store[name] = (x, y)
+
+    def read() -> dict[str, tuple[int, int]]:
+        # 第一次回读时模拟 Explorer 把位置搬走
+        if len(writes) == 1:
+            store["a"] = (300, 500)
+        return dict(store)
+
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a"],
+        write_position=write,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+        read_positions=read,
+        sleep=lambda seconds: None,
+        attempts=4,
+    )
+    assert result["verified"] is True
+    assert result["attempts_used"] == 2
+    assert len(writes) == 2
+
+
+def test_restore_positions_reports_failure_instead_of_pretending() -> None:
+    """怎么重试都压不住时必须如实报错，不能报成功。"""
+    snap = iconpos.build_snapshot([("a", 0, 5)], cell_w=75, cell_h=104)
+
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a"],
+        write_position=lambda name, x, y: None,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+        read_positions=lambda: {"a": (900, 900)},
+        sleep=lambda seconds: None,
+        attempts=3,
+    )
+    assert result["verified"] is False
+    assert result["mismatched"] == ["a"]
+    assert result["attempts_used"] == 3
+    assert any("未就位" in e for e in result["errors"])
+
+
+def test_restore_positions_without_reader_reports_unverified() -> None:
+    """没有回读能力时把 verified 置 None，不要谎报 True。"""
+    snap = iconpos.build_snapshot([("a", 0, 5)], cell_w=75, cell_h=104)
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a"],
+        write_position=lambda *_: None,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+    )
+    assert result["verified"] is None
+    assert result["attempts_used"] == 1
+
+
+def test_restore_positions_separates_absent_icons_from_misplaced_ones() -> None:
+    """回读里根本没有这个名字，说明它还没被 Explorer 插回来。
+
+    这种情况要单独报"未出现"，不能算"位置写错"——否则每次都会误报失败。
+    """
+    snap = iconpos.build_snapshot([("a", 0, 5), ("b", 0, 109)], cell_w=75, cell_h=104)
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a", "b"],
+        write_position=lambda *_: None,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+        read_positions=lambda: {"a": (0, 5)},
+        sleep=lambda seconds: None,
+        attempts=2,
+    )
+    assert result["mismatched"] == []
+    assert result["absent"] == ["b"]
+    assert any("尚未出现" in e for e in result["errors"])
+
+
+def test_restore_positions_waits_for_icons_explorer_has_not_inserted_yet() -> None:
+    """刚被移回桌面的文件，Explorer 还没来得及插进 ListView。
+
+    这种"迟到"的图标一开始不在 current_names 里，如果直接按 current_names 过滤就会
+    静默跳过，结果就是用户看到的那几个文件跑到别处去了。
+    """
+    store: dict[str, tuple[int, int]] = {}
+    polls = {"n": 0}
+    snap = iconpos.build_snapshot([("a", 0, 5), ("b", 0, 109)], cell_w=75, cell_h=104)
+    written: list[tuple[str, int, int]] = []
+
+    def write(name: str, x: int, y: int) -> None:
+        written.append((name, x, y))
+        store[name] = (x, y)
+
+    def read() -> dict[str, tuple[int, int]]:
+        polls["n"] += 1
+        if polls["n"] == 1:
+            return {"a": store.get("a", (0, 5))}          # b 还没被插进来
+        if polls["n"] == 2:
+            return {"a": store.get("a", (0, 5)), "b": (500, 500)}  # b 迟到且位置不对
+        return dict(store)
+
+    result = iconpos.restore_positions(
+        snap,
+        current_names=["a"],  # b 尚未出现
+        write_position=write,
+        get_autoarrange=lambda: False,
+        set_autoarrange=lambda value: None,
+        read_positions=read,
+        make_writer=lambda: write,
+        sleep=lambda seconds: None,
+        attempts=5,
+    )
+    assert ("b", 0, 109) in written, "迟到的图标也必须被写回原位"
+    assert result["verified"] is True
+    assert result["attempts_used"] == 3
+    assert result["absent"] == []
+
+
 def test_snapshot_roundtrip_through_json(tmp_path) -> None:
     snap = iconpos.build_snapshot([("中文 名.txt", 0, 5)], cell_w=75, cell_h=104)
     path = tmp_path / "icons.json"

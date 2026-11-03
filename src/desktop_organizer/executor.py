@@ -349,6 +349,8 @@ def _restore_icons(journal_id: str, result: ExecResult) -> None:
         write_position=iconpos.make_position_writer(),
         get_autoarrange=iconpos.get_autoarrange,
         set_autoarrange=iconpos.set_autoarrange,
+        read_positions=iconpos.read_positions_live,
+        make_writer=iconpos.make_position_writer,
     )
     result.icons = info
     for err in info.get("errors") or []:
