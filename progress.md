@@ -116,8 +116,7 @@
 - **本机 PowerShell 不支持 heredoc**：`python - <<'PYEOF'` 会报 `Missing file specification after redirection operator`；含中文的补丁必须写成 `.py` 文件再 `python file.py` 执行（here-string `python -c @"..."@` 也会把中文和 `\n` 搞坏）。
 
 ## 已知阻碍
-- `schedule_create` 工具不存在 → 用 create_goal 续轮替代（blockers.md B1）
-- 火绒拦截未签名的 PyInstaller exe（decisions.md B6）→ **已由用户加白解决**
+- `schedule_create` 工具不存在 → 用 create_goal 续轮替代（blockers.md B1）- 火绒拦截未签名的 PyInstaller exe（decisions.md B6）→ **已由用户加白解决**
 - 冻结 exe 的用户数据落在 `dist\DesktopOrganizer\data`，`--clean` 重建会清空（decisions.md B7，遗留项）
 - **进程族内存 486.3MB（WorkingSet）/ 209.5MB（Private）远超顾问要求的 75MB**（遗留 P9）。已排查：6 个 Chromium flag 全部生效，`--disable-gpu` 并不能阻止 gpu-process 被创建（59.8MB）；WebView2 的 browser/renderer 各约 120MB 属运行时基线。要压下去只能换渲染方案（放弃 == 换掉 pywebview），不在本轮范围。
 
@@ -135,3 +134,18 @@
 - 8e205fa fix: CLI 强制 UTF-8 输出
 - dd688d4 feat: M4 核心模块收口
 - 3b6ca84 feat: M3 骨架落地
+
+## GitHub 存档（2026-11-03 22:10）
+
+- 仓库：**https://github.com/thefuckbear/Desktop_Cleaner**（**私有**，默认分支 `main`）
+- 首个存档点：`ba6005c`，远端 76 个文件、28 次提交，与本地 HEAD 一致
+- **推送必须走本机代理**：直连 `github.com:443` 会挂 21 秒后失败（`curl` 返回 000），
+  走 `http://127.0.0.1:7897` 才 200。已在仓库级（不是全局）配好：
+  `git config http.proxy http://127.0.0.1:7897`、`git config https.proxy http://127.0.0.1:7897`
+- 没进仓库的东西（都在 `.gitignore` 里）：`dist/`（打包产物 49MB）、`build/`、`sandbox/`、
+  `logs/`、`data/`（含 `settings.json` 的许可状态、journal 回滚记录、AI 配置）、`evidence/*.png`
+- 仓库里没有的东西：API Key、token、真实桌面文件清单、桌面文件内容、>10MB 二进制。
+  上传前扫过 `sk-*`/`gho_*`/`ghp_*`/`AIza*`/`api_key=` 与几个真实文件名，**命中 0**
+- 想改公开：`gh repo edit thefuckbear/Desktop_Cleaner --visibility public --accept-visibility-change-consequences`
+- 别人（或换台机器）拉下来怎么跑：`git clone` → `pip install pywebview` → 双击 `scripts\launch_gui.pyw`
+  或 `python -m desktop_organizer gui`（需 `PYTHONPATH=src`）；打包版要自己跑一次 PyInstaller
