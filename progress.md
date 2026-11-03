@@ -1,9 +1,9 @@
 # 进度（progress.md）
 
-> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 17:20（北京时间）
+> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 18:52（北京时间）
 
 ## 当前阶段
-**三栏现代化 UI + AI 顾问已交付：进度事件推流（百分比）、自由去向与批量改向、AI 建议（Gemini/OpenAI 兼容，默认关闭走本地规则）、WebView2 瘦身参数、左中右三栏布局。282 绿 + exe 已重建 + 截图验证**
+**一键整理图标已交付：三种排版策略（快捷方式优先／分区看板／最近活跃优先），纯坐标写回、不动任何文件、先备份后可一键撤销。319 绿 + exe 已重建 + 真机往返实测净变化为零**
 
 ## 时间预算
 | 里程碑 | 计划时段 | 状态 |
@@ -25,6 +25,7 @@
 | 图标位置真回滚（追加） | 14:48–15:12 | 完成（用户手工关闭自动排列；187 绿；真机写回实测通过） |
 | 图标回读校验重试（追加） | 15:10–15:40 | 完成（193 绿；修好用户 4 个跑位的 `社会实践*.jpg`） |
 | **GUI 革新 + AI 顾问（追加）** | **16:48–17:20** | **完成（282 绿；进度条/自由去向/批量改向/AI 建议/三栏 UI；exe 重建）** |
+| **一键整理图标（追加）** | **18:28–18:52** | **完成（319 绿；三策略/备份可撤销/顶栏下拉+按钮；exe 重建 6556922 bytes）** |
 
 ## 已完成
 - [x] 契约三件套：`model.py`、`constants.py`、`guard.py`（含只读通道 check_read_path）
@@ -49,7 +50,9 @@
 - [x] AI 顾问：`ai_assistant.py`（Gemini / OpenAI 兼容、只传元数据、`http.client` 不用 urllib、失败降级本地规则）+ `settings.ai_config*`（api_key 打码）+ bridge `ai_suggest`/`apply_suggestions`/`save_ai_settings`
 - [x] WebView2 瘦身：`chromium_args()` / `apply_chromium_env()`（11 个 flag，不含 `--single-process`；已有环境变量追加不覆盖）
 - [x] 三栏 UI：左 Donut 空间占用 + 类别筛选、中工作台 + 百分比进度条 + 批量改去向、右 AI 顾问抽屉（服务商/Key/模型/网关/保存/让 AI 提建议/一键采纳）
-- [x] 全量测试 **282 passed / 1 skipped**
+- [x] 一键整理图标：`layout.py` 三策略（快捷方式优先／分区看板／最近活跃优先）+ 纯坐标写回 + 先备份可撤销 + `bridge` 三方法 + 顶栏下拉/按钮/撤销 toast（e73c05d）
+- [x] `iconpos.restored` 口径修正：报本次写回总数，而不是最后一轮重试的数量
+- [x] 全量测试 **319 passed / 1 skipped**
 
 ## 实测数据
 | 指标 | 目标 | 实测 | 结论 |
@@ -72,7 +75,8 @@
 | **进程族常驻内存（进程树口径）** | 顾问要求 < 75MB | **WorkingSet 486.3MB / Private 209.5MB（7 个进程）** | **不达标，见遗留 P9** |
 | 单进程常驻内存（旧口径，仅主进程） | 低 | 97.3–105MB | 记录（低估，勿单独引用） |
 | WebView2 flag 生效性 | 生效 | browser 命令行 6/6 flag `PRESENT` | 达标（但 gpu-process 仍被创建） |
-| 全量测试 | 全绿 | **282 passed / 1 skipped** | 达标 |
+| **一键排版 + 撤销往返（真机，Bridge 路径）** | 净变化为零 | 251 项排版，246 个坐标变动；撤销后 `same=True moved=0`，`restored=251 verified=True` | 达标 |
+| 全量测试 | 全绿 | **319 passed / 1 skipped** | 达标 |
 
 ## 下一步
 1. 用户在界面上点右上角「用户目录写入：关」→ 变「开」（会弹一次确认）。
@@ -80,8 +84,9 @@
 3. 目标目录不满意：在「批量改去向」输入框写 `2026/专案组` 这类相对路径，点「应用到选中」；也支持单行改判。
 4. 想让 AI 出建议：右栏「AI 顾问」选服务商（Gemini / OpenAI 兼容）、填 API Key（只存本地、不下发前端明文）、点「让 AI 提建议」→「一键采纳」。**默认是「关闭（只用本地规则）」，不填也能用**。
 5. 不满意点「回滚上一次」：文件回原位、空目录自动清理、mtime/atime/创建时间三项按日志还原、主动刷新 shell、**桌面图标按整理前快照写回并回读校验**。
-6. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、DPI 缩放验证、**进程族内存 486MB 未达 75MB 目标（P9）**。
-7. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
+6. **只想把桌面摆整齐、不改任何文件**：顶栏左「快捷方式优先 / 分区看板 / 最近活跃优先」选一种 → 点「一键整理图标」→ 成功 toast 里直接点「撤销」可整盘还原（备份在 `data\layout_undo.json`）。这条路径**只写图标坐标，一个文件都不动**。
+7. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、DPI 缩放验证、**进程族内存 486MB 未达 75MB 目标（P9）**。
+8. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
 
 ## 环境坑（新增）
 - **截图正确姿势（17:16 定稿）**：先 `EnumWindows` 按 PID 列出该进程所有顶层窗口，选 `IsWindowVisible` 且**宽 > 600 且面积最大**的那个（句柄会变，且会有 160x28 的幽灵窗口），再 `PrintWindow(h, hdc, 2)`。`CopyFromScreen` 不管怎么切前台都会抓到挡在前面的别的窗口（实测两次抓到文件资源管理器）。`evidence/gui-shot15.png` / `gui-shot16.png` 是正确产物，`gui-shot11~14` 是失败尝试。
@@ -96,6 +101,8 @@
 - **进程族内存 486.3MB（WorkingSet）/ 209.5MB（Private）远超顾问要求的 75MB**（遗留 P9）。已排查：6 个 Chromium flag 全部生效，`--disable-gpu` 并不能阻止 gpu-process 被创建（59.8MB）；WebView2 的 browser/renderer 各约 120MB 属运行时基线。要压下去只能换渲染方案（放弃 == 换掉 pywebview），不在本轮范围。
 
 ## git 最近提交
+- e73c05d feat: 一键整理图标 - 三种排版策略 + 备份后可撤销的坐标写回
+- 61f1a28 feat: 三栏现代化界面 + AI 顾问建议 + 进度条 + 自由去向
 - b88dd0c fix: 回滚补齐创建时间并刷新 shell，界面加搜索/排序且不再默认勾选
 - 1f1b880 fix: 回滚复原文件时间戳，桌面图标顺序不再被整理打乱
 - 212f96b feat: 用户可自行打开写盘许可开关，桌面整理不再被硬拦
