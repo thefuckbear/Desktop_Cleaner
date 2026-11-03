@@ -1,9 +1,9 @@
 # 进度（progress.md）
 
-> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 18:52（北京时间）
+> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 19:52（北京时间）
 
 ## 当前阶段
-**一键整理图标已交付：三种排版策略（快捷方式优先／分区看板／最近活跃优先），纯坐标写回、不动任何文件、先备份后可一键撤销。319 绿 + exe 已重建 + 真机往返实测净变化为零**
+**P8 越界裁剪已交付：写回图标/回滚前按当前工作区夹取坐标，换分辨率不再把图标丢到屏幕外；排版步长改由桌面相邻图标间距推断（实测 75/104，系统常量 75/75 是错的）。337 绿 + exe 已重建（6,560,039 bytes）+ 真机 251 项排版/撤销往返净变化为零**
 
 ## 时间预算
 | 里程碑 | 计划时段 | 状态 |
@@ -26,6 +26,7 @@
 | 图标回读校验重试（追加） | 15:10–15:40 | 完成（193 绿；修好用户 4 个跑位的 `社会实践*.jpg`） |
 | **GUI 革新 + AI 顾问（追加）** | **16:48–17:20** | **完成（282 绿；进度条/自由去向/批量改向/AI 建议/三栏 UI；exe 重建）** |
 | **一键整理图标（追加）** | **18:28–18:52** | **完成（319 绿；三策略/备份可撤销/顶栏下拉+按钮；exe 重建 6556922 bytes）** |
+| **越界裁剪 + 实测网格步长（追加）** | **19:44–19:52** | **完成（337 绿；换分辨率不再丢图标；提交 43c62c0；exe 重建 6560039 bytes）** |
 
 ## 已完成
 - [x] 契约三件套：`model.py`、`constants.py`、`guard.py`（含只读通道 check_read_path）
@@ -52,7 +53,10 @@
 - [x] 三栏 UI：左 Donut 空间占用 + 类别筛选、中工作台 + 百分比进度条 + 批量改去向、右 AI 顾问抽屉（服务商/Key/模型/网关/保存/让 AI 提建议/一键采纳）
 - [x] 一键整理图标：`layout.py` 三策略（快捷方式优先／分区看板／最近活跃优先）+ 纯坐标写回 + 先备份可撤销 + `bridge` 三方法 + 顶栏下拉/按钮/撤销 toast（e73c05d）
 - [x] `iconpos.restored` 口径修正：报本次写回总数，而不是最后一轮重试的数量
-- [x] 全量测试 **319 passed / 1 skipped**
+- [x] **P8 越界裁剪**：`iconpos.clamp_position` 写回前按当前工作区夹取，越界计数写进 errors（43c62c0）
+- [x] **排版步长改由桌面实测推断**：`layout.icon_step_from_positions` 取相邻差众数；实测 75/104，而 `GetSystemMetrics(38/39)`=75/75、`LVM_GETITEMSPACING`=96/81 全是错的
+- [x] `executor._restore_icons` 回滚写回前先取当前工作区 bounds（换屏幕后回滚也不丢图标）
+- [x] 全量测试 **337 passed / 1 skipped**
 
 ## 实测数据
 | 指标 | 目标 | 实测 | 结论 |
@@ -76,7 +80,10 @@
 | 单进程常驻内存（旧口径，仅主进程） | 低 | 97.3–105MB | 记录（低估，勿单独引用） |
 | WebView2 flag 生效性 | 生效 | browser 命令行 6/6 flag `PRESENT` | 达标（但 gpu-process 仍被创建） |
 | **一键排版 + 撤销往返（真机，Bridge 路径）** | 净变化为零 | 251 项排版，246 个坐标变动；撤销后 `same=True moved=0`，`restored=251 verified=True` | 达标 |
-| 全量测试 | 全绿 | **319 passed / 1 skipped** | 达标 |
+| **桌面真实网格步长** | 与系统常量对齐 | **75 / 104**（系统 `SM_CXICONSPACING`=75/75、`LVM_GETITEMSPACING`=96/81 均不符） | 只能用桌面坐标推断 |
+| **越界夹取（P8）** | 不出屏幕 | (3000,100)→(2485,100)；(100,2000)→(100,1317)；(-50,-80)→(0,0)；(5000,5000)→(2485,1317) | 达标 |
+| **排版+撤销（步长修正后复测）** | 零溢出 + 净变化为零 | 容量 429 ≥ 251；排成 20 列×13 行，`skipped_overflow=0`；撤销 `restored=251 verified=True`，`diff same=True` | 达标 |
+| 全量测试 | 全绿 | **337 passed / 1 skipped** | 达标 |
 
 ## 下一步
 1. 用户在界面上点右上角「用户目录写入：关」→ 变「开」（会弹一次确认）。
@@ -85,14 +92,17 @@
 4. 想让 AI 出建议：右栏「AI 顾问」选服务商（Gemini / OpenAI 兼容）、填 API Key（只存本地、不下发前端明文）、点「让 AI 提建议」→「一键采纳」。**默认是「关闭（只用本地规则）」，不填也能用**。
 5. 不满意点「回滚上一次」：文件回原位、空目录自动清理、mtime/atime/创建时间三项按日志还原、主动刷新 shell、**桌面图标按整理前快照写回并回读校验**。
 6. **只想把桌面摆整齐、不改任何文件**：顶栏左「快捷方式优先 / 分区看板 / 最近活跃优先」选一种 → 点「一键整理图标」→ 成功 toast 里直接点「撤销」可整盘还原（备份在 `data\layout_undo.json`）。这条路径**只写图标坐标，一个文件都不动**。
-7. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、DPI 缩放验证、**进程族内存 486MB 未达 75MB 目标（P9）**。
+7. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、**进程族内存 486MB 未达 75MB 目标（P9）**。
 8. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
+9. 换显示器/改缩放后**不需要**做任何事：排版与回滚都会按当前工作区裁剪，越界数量会写在返回的 `errors` 里（界面日志区可见）。
 
 ## 环境坑（新增）
 - **截图正确姿势（17:16 定稿）**：先 `EnumWindows` 按 PID 列出该进程所有顶层窗口，选 `IsWindowVisible` 且**宽 > 600 且面积最大**的那个（句柄会变，且会有 160x28 的幽灵窗口），再 `PrintWindow(h, hdc, 2)`。`CopyFromScreen` 不管怎么切前台都会抓到挡在前面的别的窗口（实测两次抓到文件资源管理器）。`evidence/gui-shot15.png` / `gui-shot16.png` 是正确产物，`gui-shot11~14` 是失败尝试。
 - **backdrop-filter 会让 PrintWindow 漏内容**：旧界面 `.acts` 带 `blur(22px)`，被提升成独立合成层导致按钮区拍不到；新版只在顶栏保留 backdrop-filter，其余已去掉，故 PrintWindow 可用。
 - **内存别按进程名统计**：`Get-Process msedgewebview2` 会把 Windows 搜索与 clash-verge 的进程一起算进来（实测虚高到 25 进程 / 1134MB）。要按 `ParentProcessId` 递归建进程树。
 - **`Copy-Item "$backup\*"` 还原目录会报** `Container cannot be copied onto existing leaf item`；改用 `Get-ChildItem $backup | ForEach-Object { Copy-Item $_.FullName (Join-Path $dest $_.Name) -Recurse -Force }`。
+- **桌面格距不要信系统常量**：`GetSystemMetrics(38/39)` 报 75/75、`LVM_GETITEMSPACING` 报 96/81，而桌面相邻坐标差恒为 **75/104**。按错的行距排版会让两个图标被 Explorer 对齐进同一格。唯一可信来源是桌面自己的图标坐标。
+- **本机 PowerShell 不支持 heredoc**：`python - <<'PYEOF'` 会报 `Missing file specification after redirection operator`；含中文的补丁必须写成 `.py` 文件再 `python file.py` 执行（here-string `python -c @"..."@` 也会把中文和 `\n` 搞坏）。
 
 ## 已知阻碍
 - `schedule_create` 工具不存在 → 用 create_goal 续轮替代（blockers.md B1）
