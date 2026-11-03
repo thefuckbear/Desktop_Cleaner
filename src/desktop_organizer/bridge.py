@@ -121,7 +121,7 @@ class Bridge:
             self._last_journal = result.journal_id
         return payload
 
-    def rollback(self, journal_id: str = "") -> dict[str, Any]:
+    def rollback(self, journal_id: str = "", restore_icons: bool = True) -> dict[str, Any]:
         """回滚。不传则回滚最近一次成功执行。"""
         target = journal_id or self._last_journal
         if not target:
@@ -129,7 +129,9 @@ class Bridge:
             target = ids[-1] if ids else ""
         if not target:
             return {"ok": False, "rolled_back": 0, "errors": ["没有可回滚的执行记录"]}
-        return executor.rollback(target, allow_user_dirs=self._permitted()).to_dict()
+        return executor.rollback(
+            target, allow_user_dirs=self._permitted(), restore_icons=restore_icons
+        ).to_dict()
 
     def _permitted(self) -> bool:
         """每次写盘前现读设置，不缓存：用户刚关掉开关就得立刻生效。"""

@@ -14,11 +14,20 @@ import os
 import shutil
 from pathlib import Path
 
-from . import guard, journal, shellrefresh
+from . import guard, iconpos, journal, shellrefresh
 from .model import ExecResult, GuardError, Plan, PlanAction
 
 _VALID_KINDS = frozenset({"move"})
 _MAX_SUFFIX = 999
+
+
+def _icons_dir() -> Path:
+    """图标快照放在日志目录下，跟着 journal 一起被 Git 忽略。"""
+    return journal.journal_dir() / "icons"
+
+
+def _snapshot_path(journal_id: str) -> Path:
+    return _icons_dir() / f"{journal_id}.json"
 
 
 def _unique_dst(dst: Path) -> Path:
@@ -233,11 +242,16 @@ def execute(
     dry_run: bool = True,
     *,
     allow_user_dirs: bool | None = None,
+    capture_icons: bool | None = None,
 ) -> ExecResult:
     """执行计划。``dry_run`` 默认 True，只有显式传 False 才会真正动盘。
 
     ``allow_user_dirs`` 是用户级写盘许可（默认 None = 走 constants 的 False）。
     它由 bridge 从 settings.json 读出来传进来 —— 用户不点头，桌面文件一条都不动。
+
+    ``capture_icons``：是否在动盘前给桌面图标拍坐标快照。
+    None = 自动（只有整理的就是桌面本身时才拍）；True/False = 强制开/关。
+    拍快照要跨进程读 Explorer 的 ListView，对非桌面目录毫无意义且很慢。
     """
     result = ExecResult()
     if not plan.actions:
@@ -245,6 +259,19 @@ def execute(
         return result
 
     jref = _JournalRef(plan.root)
+
+    want_snapshot = (
+        iconpos.is_desktop_path(plan.root) if capture_icons is None else bool(capture_icons)
+    )
+
+    # 动任何文件之前先给桌面拍一张"图标坐标快照"。
+    # 之所以先读进内存、等 jid 出来再落盘：jid 是懒创建的，全被守卫拒绝时不该留空文件。
+    snapshot: dict | None = None
+    if not dry_run and want_snapshot:
+        try:
+            snapshot = iconpos.snapshot_live()
+        except Exception as exc:  # noqa: BLE001 - 快照失败不该阻止整理
+            result.errors.append(f"图标位置快照失败（不影响文件移动）：{exc}")
 
     for seq, action in enumerate(plan.actions, start=1):
         error = _apply_one(
@@ -257,6 +284,11 @@ def execute(
             result.applied += 1
 
     result.journal_id = jref.id
+    if snapshot is not None and result.journal_id:
+        try:
+            iconpos.save_snapshot(snapshot, _snapshot_path(result.journal_id))
+        except Exception as exc:  # noqa: BLE001
+            result.errors.append(f"图标位置快照保存失败（不影响文件移动）：{exc}")
     result.ok = result.failed == 0
     _explain_blanket_rejection(plan, result, allow_user_dirs=allow_user_dirs)
     return result
@@ -296,10 +328,43 @@ def _rollback_targets(records: list[dict]) -> list[dict]:
     return done + started
 
 
-def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecResult:
+def _restore_icons(journal_id: str, result: ExecResult) -> None:
+    """回滚之后把图标坐标写回去。
+
+    只有在整理时成功拍过快照才做；拍照失败说明当时也拿不到坐标，
+    这时硬写回去反而会把用户当前的布局改乱。
+    """
+    snapshot = iconpos.load_snapshot(_snapshot_path(journal_id))
+    if not snapshot:
+        return
+    try:
+        current_names = [name for name, _x, _y in iconpos.iter_items()]
+    except Exception as exc:  # noqa: BLE001
+        result.errors.append(f"读取当前桌面图标失败，跳过位置复原：{exc}")
+        return
+
+    info = iconpos.restore_positions(
+        snapshot,
+        current_names=current_names,
+        write_position=iconpos.make_position_writer(),
+        get_autoarrange=iconpos.get_autoarrange,
+        set_autoarrange=iconpos.set_autoarrange,
+    )
+    result.icons = info
+    for err in info.get("errors") or []:
+        result.errors.append(f"图标位置：{err}")
+
+
+def rollback(
+    journal_id: str,
+    *,
+    allow_user_dirs: bool | None = None,
+    restore_icons: bool = True,
+) -> ExecResult:
     """按日志倒序把文件移回原处。源位置已被占用时跳过，绝不覆盖。
 
     回滚同样是写盘，因此和 execute 一样需要写盘许可。
+    ``restore_icons=False`` 时只还原文件、不碰图标位置。
     """
     result = ExecResult()
     records = journal.load(journal_id)
@@ -358,5 +423,10 @@ def rollback(journal_id: str, *, allow_user_dirs: bool | None = None) -> ExecRes
     if restored_srcs:
         for root in sorted(roots):
             shellrefresh.notify_after_rollback(root, restored_srcs)
+
+    # 最后一步：把每个图标摆回整理前的像素坐标（关掉自动排列后位置才是可写的数据）。
+    if restore_icons and result.rolled_back:
+        _restore_icons(journal_id, result)
+
     result.ok = result.failed == 0
     return result

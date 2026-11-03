@@ -591,7 +591,18 @@ async function apply(dryRun){
 async function rollback(){
   try{
     const res = await api.rollback(state.lastJournal);
-    log(`回滚完成：恢复 ${res.rolled_back} 个（文件名与修改时间均已还原，桌面排序会回到整理前）`, "ok");
+    log(`回滚完成：恢复 ${res.rolled_back} 个（文件名与修改时间均已还原）`, "ok");
+    const ic = res.icons;
+    if (ic && ic.restored){
+      log(`图标位置：已按整理前的快照还原 ${ic.restored} 个` + (ic.skipped ? `，${ic.skipped} 个没找到` : ""), ic.skipped ? "warn" : "ok");
+      if (ic.autoarrange_was_on){
+        log("注意：桌面「自动排列图标」当时是开着的，已临时关闭以便写回位置；重新打开会自动重排。", "warn");
+      }
+    }else if (ic){
+      log("图标位置：这次没有可写回的坐标（快照为空或图标都已不存在）", "warn");
+    }else{
+      log("图标位置：该次整理没有保存坐标快照，只还原了文件与时间戳", "warn");
+    }
     toast(`已恢复 ${res.rolled_back} 个`);
     (res.errors || []).forEach((e) => log(`跳过/失败：${e}`, "warn"));
     state.lastJournal = "";

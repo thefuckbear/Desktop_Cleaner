@@ -238,9 +238,16 @@ def cmd_rollback(args: argparse.Namespace) -> int:
         journal_id = ids[-1]
         print(f"未指定 --journal，使用最近一次：{journal_id}")
 
-    result = executor.rollback(journal_id, allow_user_dirs=_permitted(args))
+    result = executor.rollback(
+        journal_id,
+        allow_user_dirs=_permitted(args),
+        restore_icons=not getattr(args, "no_restore_icons", False),
+    )
     print(f"\n[回滚 {journal_id}]")
     print(f"  已恢复={result.rolled_back}  skipped={result.skipped}  failed={result.failed}")
+    if result.icons:
+        ic = result.icons
+        print(f"  图标位置：已写回 {ic.get('restored', 0)} 个，跳过 {ic.get('skipped', 0)} 个")
     for e in result.errors[:20]:
         print(f"  - {e}")
     return 0 if result.failed == 0 else 1
@@ -310,6 +317,8 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--journal", default="", help="journal id，缺省用最近一次")
     sp.add_argument("--allow-user-dirs", action="store_true",
                     help="允许从用户目录回滚（默认关闭；界面里打开过则自动生效）")
+    sp.add_argument("--no-restore-icons", action="store_true",
+                    help="只还原文件与时间戳，不写回桌面图标坐标")
     sp.set_defaults(func=cmd_rollback)
 
     sp = sub.add_parser("journals", help="列出历史执行日志")

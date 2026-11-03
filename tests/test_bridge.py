@@ -160,3 +160,20 @@ def test_bridge_apply_uses_the_persisted_permission(fake_desktop: Path) -> None:
     back = b.rollback()
     assert back["rolled_back"] == 2
     assert (fake_desktop / "a.png").is_file()
+
+def test_bridge_rollback_forwards_restore_icons_flag(tmp_path: Path, monkeypatch) -> None:
+    """关掉图标复原要能一路传到 executor，否则 GUI 上的选择形同虚设。"""
+    from desktop_organizer import executor
+
+    b = bridge.Bridge(root=str(tmp_path), depth=1, store_path=tmp_path / "pref.json")
+    b._last_journal = "j-test-0001"
+    seen: list[bool] = []
+
+    def fake_rollback(journal_id, *, allow_user_dirs=None, restore_icons=True):
+        seen.append(restore_icons)
+        return executor.ExecResult(ok=True, rolled_back=0)
+
+    monkeypatch.setattr(executor, "rollback", fake_rollback)
+    b.rollback("j-test-0001", restore_icons=False)
+    b.rollback("j-test-0001")
+    assert seen == [False, True]

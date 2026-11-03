@@ -98,6 +98,9 @@ class ExecResult:
     errors: list[str] = field(default_factory=list)
     journal_id: str = ""
     rolled_back: int = 0
+    # 图标位置写回的结果（restored/skipped/autoarrange_was_on/errors/planned）；
+    # None 表示这次没有做（dry-run、没有快照、或用户关掉了复原）。
+    icons: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return dataclasses.asdict(self)

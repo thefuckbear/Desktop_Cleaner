@@ -83,11 +83,16 @@ def test_user_dir_permission_switch_is_wired():
     assert "settings()" in html, "界面启动时没有读取开关状态"
 
 
-def test_rollback_log_mentions_timestamps_restored():
-    """回滚后必须告诉用户"排序也回来了"，否则用户仍会担心图标顺序被打乱。"""
+def test_rollback_log_mentions_timestamps_and_icon_positions():
+    """回滚后必须说清"时间戳回来了"和"图标坐标也写回去了"。
+
+    只报文件数量不够——用户上次就是因为图标没回原位而认为回滚失败。
+    """
     html = _html()
     assert "修改时间" in html, "回滚提示没有说明时间戳已还原"
-    assert "排序" in html, "回滚提示没有说明排序会复原"
+    assert "图标位置" in html, "回滚提示没有说明图标坐标已写回"
+    assert "快照" in html, "回滚提示没有说明位置来自整理前的快照"
+    assert "res.icons" in html, "回滚后没有读取 icons 结果"
 
 
 def test_plan_does_not_precheck_anything():

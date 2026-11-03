@@ -115,3 +115,19 @@ def test_permission_falls_back_to_persisted_setting(
 
     settings.set_allow_user_dirs(True)
     assert cli._permitted(args) is True  # 界面里打开过 -> 自动生效
+
+
+def test_rollback_accepts_journal_and_icon_opt_out() -> None:
+    """`rollback --journal X` 与 `--no-restore-icons` 都必须能被解析。
+
+    历史坑：曾有人把 journal id 当位置参数传给 rollback，argparse 直接
+    `unrecognized arguments` 退出，看起来像"回滚没生效"。
+    """
+    args = cli.build_parser().parse_args(
+        ["rollback", "--journal", "j-20260101-000000-abcdef12", "--no-restore-icons"]
+    )
+    assert args.journal == "j-20260101-000000-abcdef12"
+    assert args.no_restore_icons is True
+
+    plain = cli.build_parser().parse_args(["rollback"])
+    assert plain.no_restore_icons is False
