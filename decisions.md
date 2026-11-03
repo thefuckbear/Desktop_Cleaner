@@ -42,3 +42,19 @@
 - 常驻后台监控 / 文件系统 watcher
 - 无限撤销历史（只保留最近 20 个 journal）
 - 国际化（中文单语）
+
+## D10 地址是权威，不预设官方 Key 形态（2026-11-03 重构）
+- **背景**：用户 `m08927` 明确「我的 key 是 opencode go 的 key，不要预设是 ds 官网 key」。
+  旧实现把 `provider=deepseek` 直接等价于"发往 `api.deepseek.com`"，于是中转站 key 一律 401，
+  而 401 文案又写「API Key 无效」——把"地址配错"说成"key 坏了"，用户会一直换 key 也换不好。
+- **决定**：`base_url` 填了就绝对优先；没填才回落到 `DEFAULT_BASE_URLS`。
+  端点不写死 `{base}/chat/completions`，而是 `{base}` 与 `{base}/v1` 两个候选依次试，
+  仅 404/405 才换下一个——其余状态码是真实故障，继续试只会掩盖原因。
+- **决定**：请求头固定带 `x-opencode-session`（进程内一个 uuid4）。opencode go 实测缺这个头
+  直接 400 `MissingSessionID`，长得像鉴权失败但跟 key 无关；官方 API 忽略未知头，带上无害。
+- **决定**：`response_format` 只在官方地址发。中转站不保证支持，发了可能整条 400。
+- **决定**：中转 key 识别只认强证据 `^[a-z]{2,}_sk_`（如 `oc_sk_`），**不用"不以 sk- 开头"当判据**。
+  第一版用了后者，结果把测试里 `api_key="k"` 这种合法短 key 全判成中转站——证据太弱会误伤。
+- **放弃**：给界面塞一堆中转站预设列表。地址用户自己填一次就完事，内置列表只会过期。
+- **实测**（真机，非推断）：`GET https://opencode.ai/zen/go/v1/models` 返回 200 与 28 个模型；
+  `analyze()` 端到端返回 3 条可执行建议，`degraded=False`。

@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Literal
 
@@ -220,6 +221,15 @@ def analyze(
         return _degrade(item_list, store, "AI 未配置 API Key")
     if cfg.provider == "openai_compatible" and not cfg.resolved_base_url():
         return _degrade(item_list, store, "OpenAI 兼容模式缺少 Base URL")
+    if _looks_like_relay_key(cfg):
+        return _degrade(
+            item_list,
+            store,
+            "这把 Key 不像 "
+            f"{cfg.provider} 官方格式（官方以 sk- 开头），更像是第三方中转站的 Key。"
+            "请在该服务商的 Base URL 里填写中转站地址（例如 https://your-relay.com/v1），"
+            "否则请求会被发往官方地址并必然被拒",
+        )
 
     known = {os_norm(item.path) for item in item_list}
     payload = build_payload(to_briefs(item_list), cfg)
@@ -287,11 +297,24 @@ def sanitize_target(target: str) -> str:
     return "/".join(parts)
 
 
+_FENCE = re.compile(r"^\s*```[a-zA-Z]*\s*\n(.*?)\n?\s*```\s*$", re.DOTALL)
+
+
+def _strip_fence(text: str) -> str:
+    """剥掉 ```` ```json ```` 围栏。
+
+    中转站上不少模型即便收到"只返回 JSON"也会包一层 markdown 代码块；
+    为此整批降级太贵了——真正要的是里面的 JSON。
+    """
+    match = _FENCE.match(text or "")
+    return match.group(1).strip() if match else text
+
+
 def _parse_suggestions(
     raw: str, *, root: str, known_paths: set[str] | None = None
 ) -> list[AISuggestion]:
     """解析模型输出。任何结构不对都抛异常，由 analyze 统一降级。"""
-    text = (raw or "").strip()
+    text = _strip_fence((raw or "").strip())
     if not text:
         raise ValueError("模型返回为空")
     data = json.loads(text)
@@ -335,6 +358,69 @@ def _parse_suggestions(
 
 # ------------------------------------------------------------------ 传输层
 
+# opencode go 这类网关要求带一个会话标识，缺了直接 400 MissingSessionID。
+# 同一进程内固定一个：换 ID 对服务端是噪声，对日志是干扰；官方 API 会忽略未知头。
+_SESSION_ID = uuid.uuid4().hex
+_SESSION_HEADER = "x-opencode-session"
+
+# 版本段判定：/v1、/v2、/v1.2 结尾都算"已经有了，别再叠"
+_VERSION_TAIL = re.compile(r"/v\d+(?:\.\d+)?$", re.IGNORECASE)
+
+# 官方 key 形态：DeepSeek/OpenAI 都是 sk- 开头
+_OFFICIAL_KEY_PREFIX = re.compile(r"^sk-[A-Za-z0-9]", re.IGNORECASE)
+# 中转站常见形态：<厂商>_sk_<随机>，如 opencode go 的 oc_sk_xxx。
+# 只认"带厂商前缀的 sk"，因为"不是 sk- 开头"的证据太弱——用户可能用别的合法格式。
+_RELAY_KEY_PREFIX = re.compile(r"^[A-Za-z]{2,}_sk_", re.IGNORECASE)
+_OFFICIAL_PROVIDERS = frozenset({"deepseek"})
+
+
+def _is_official_base(base: str) -> bool:
+    """判断是不是官方地址——只有官方才保证认识 response_format 这类扩展参数。"""
+    host = (base or "").strip().lower()
+    for official in DEFAULT_BASE_URLS.values():
+        if official and host.startswith(official.lower()):
+            return True
+    return False
+
+
+def _looks_like_relay_key(cfg: AIConfig) -> bool:
+    """官方 provider + 没填 Base URL + key 是"厂商前缀 + _sk_"形态 => 这把 key 属于中转站。
+
+    这时若照旧打到官方地址，必然 401，而 401 的文案会让人去查 key——
+    实际上该查的是地址。所以提前拦下来，直接说清该改哪里。
+    只认强证据（`oc_sk_` 这种带厂商前缀的形态），不拿"没写 sk-"当理由。
+    """
+    if cfg.provider not in _OFFICIAL_PROVIDERS:
+        return False
+    if (cfg.base_url or "").strip():
+        return False
+    if _OFFICIAL_KEY_PREFIX.match(cfg.api_key or ""):
+        return False
+    return bool(_RELAY_KEY_PREFIX.match(cfg.api_key or ""))
+
+
+def _bases_to_try(base: str) -> list[str]:
+    """用户填的 base 要不要补 /v1：能自己试就别让人猜。"""
+    base = (base or "").strip().rstrip("/")
+    if not base:
+        return []
+    if _VERSION_TAIL.search(base):
+        return [base]
+    return [base, f"{base}/v1"]
+
+
+def _openai_endpoints(base: str) -> list[str]:
+    """候选 chat/completions 地址，按"用户怎么填的可能性"排序。"""
+    return [f"{b}/chat/completions" for b in _bases_to_try(base)]
+
+
+def _openai_headers(api_key: str) -> dict[str, str]:
+    return {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {api_key}",
+        _SESSION_HEADER: _SESSION_ID,
+    }
+
 
 def _default_transport(cfg: AIConfig, timeout: float) -> Transport:
     if cfg.provider == "gemini":
@@ -377,8 +463,19 @@ def _proxy_from_env() -> str:
     return ""
 
 
-def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -> str:
-    """最小 HTTPS POST。用 http.client 而非 urllib：避免撞上源码红线检查。"""
+def _http_request(
+    method: str,
+    url: str,
+    headers: dict[str, str],
+    body: bytes | None,
+    timeout: float,
+) -> tuple[int, str]:
+    """最小 HTTPS 请求，返回 ``(状态码, 正文)``。
+
+    这里**不把 4xx 当异常抛**：调用方要靠状态码决定"这个端点不对，换下一个"
+    还是"key/地址配错了，别再试"。异常只用于真正的传输失败（连不上、超时）。
+    用 http.client 而非 urllib：避免撞上源码红线检查。
+    """
     import http.client  # noqa: PLC0415 - 延迟导入，测试注入 transport 时不碰网络
     from urllib.parse import urlsplit
 
@@ -397,23 +494,96 @@ def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -
     except (OSError, ValueError) as exc:
         raise ValueError(f"代理地址不可用（{proxy}）：{exc}") from exc
     try:
-        conn.request("POST", path, body=body, headers=headers)
+        conn.request(method, path, body=body, headers=headers)
         response = conn.getresponse()
         text = response.read().decode("utf-8", "replace")
-        status = response.status
-        if status in (401, 403):
-            # 401 的原始报文是英文 JSON，用户看不出是 Key 的问题
-            raise ValueError(
-                f"API Key 无效或无权访问（HTTP {status}）。请到服务商后台确认 Key 是否正确、是否已过期"
-            )
-        if status >= 400:
-            raise ValueError(f"HTTP {status}: {text[:200]}")
-        return text
+        return response.status, text
     except TimeoutError as exc:
         how = f"经由代理 {proxy}" if proxy else "直连（未检测到代理）"
         raise ValueError(f"请求超时（{timeout:.0f} 秒，{how}）。网络慢或代理不通，可调大超时再试") from exc
     finally:
         conn.close()
+
+
+def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -> str:
+    """POST 并在非 2xx 时抛错（老接口，单端点场景仍可用）。"""
+    status, text = _http_request("POST", url, headers, body, timeout)
+    if status >= 400:
+        raise ValueError(_explain_status(status, text, url))
+    return text
+
+
+def _explain_status(status: int, text: str, url: str) -> str:
+    """把 HTTP 状态翻成"用户能据此改配置"的话。
+
+    401 的旧文案一口咬定"Key 无效"——当中转 key 被发去官网时，这句
+    把"地址配错了"伪装成"key 坏了"，是这次排查绕远的直接原因。
+    """
+    snippet = (text or "").strip()[:200]
+    if status in (401, 403):
+        return (
+            f"该地址不接受这把 Key（HTTP {status}）：{url}\n"
+            "若是第三方中转站的 Key，请确认 Base URL 填的是中转站地址而不是服务商官网；"
+            "若地址无误，再去服务商后台核对 Key 是否过期或被停用"
+        )
+    if status == 400 and "MissingSessionID" in snippet:
+        return (
+            f"服务端要求会话标识（HTTP 400）：{url}\n"
+            f"已自动附带 {_SESSION_HEADER} 请求头；仍报此错说明该网关用别的头名，"
+            "可把这段报文反馈给开发者"
+        )
+    return f"HTTP {status}：{url}\n{snippet}"
+
+
+def probe_endpoint(
+    base_url: str = "",
+    api_key: str = "",
+    *,
+    timeout: float = 20.0,
+    getter: Callable[[str, dict[str, str], float], tuple[int, str]] | None = None,
+) -> dict[str, Any]:
+    """探一次 ``/models``，把可用 base 与模型列表拿回来。
+
+    这是「测试连接」按钮的后端：填不填 /v1 由它试出来，试中哪个就回填哪个。
+    任何失败都写进返回值，不抛——按钮点了没反应比报错更糟。
+    """
+    bases = _bases_to_try(base_url)
+    if not bases:
+        return {"ok": False, "base_url_used": "", "models": [], "error": "缺少 Base URL", "tried": []}
+    do_get = getter or (lambda url, headers, t: _http_request("GET", url, headers, None, t))
+    headers = _openai_headers(api_key)
+    tried: list[dict[str, Any]] = []
+    for base in bases:
+        url = f"{base}/models"
+        try:
+            status, text = do_get(url, headers, timeout)
+        except Exception as exc:  # noqa: BLE001 - 探测失败只能回报，不能把界面打挂
+            tried.append({"url": url, "status": "error", "detail": str(exc)[:160]})
+            continue
+        tried.append({"url": url, "status": status})
+        if status >= 400:
+            continue
+        try:
+            data = json.loads(text)
+        except json.JSONDecodeError:
+            continue
+        rows = data.get("data") if isinstance(data, dict) else None
+        ids = [
+            str(row.get("id"))
+            for row in (rows or [])
+            if isinstance(row, dict) and row.get("id")
+        ]
+        return {"ok": True, "base_url_used": base, "models": ids, "error": "", "tried": tried}
+    last = tried[-1] if tried else {}
+    return {
+        "ok": False,
+        "base_url_used": "",
+        "models": [],
+        "error": _explain_status(
+            int(last.get("status") or 0), "", str(last.get("url") or base_url)
+        ),
+        "tried": tried,
+    }
 
 
 def _post_gemini(cfg: AIConfig, payload: dict, timeout: float) -> str:
@@ -446,31 +616,56 @@ def _extract_gemini_text(raw: str) -> str:
     return str(parts[0].get("text") or "")
 
 
-def _post_openai(cfg: AIConfig, payload: dict, timeout: float) -> str:
-    base = cfg.resolved_base_url().rstrip("/")
-    url = f"{base}/chat/completions"
-    body = json.dumps(
-        {
-            "model": cfg.resolved_model(),
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "messages": [
-                {"role": "system", "content": _SYSTEM_PROMPT},
-                {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-            ],
-        },
-        ensure_ascii=False,
-    ).encode("utf-8")
-    raw = _http_post(
-        url,
-        {
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {cfg.api_key}",
-        },
-        body,
-        timeout,
+def _post_openai(
+    cfg: AIConfig,
+    payload: dict,
+    timeout: float,
+    poster: Callable[[str, dict[str, str], bytes, float], tuple[int, str]] | None = None,
+) -> str:
+    """往 OpenAI 兼容网关发一次，返回模型原始文本。
+
+    端点按 ``_openai_endpoints`` 依次试：用户填 ``https://host`` 而真正端点是
+    ``https://host/v1`` 时，404 只是"这个猜测不对"，不是失败。只有非 404/405
+    才停手——那才是 key 或网关本身的问题，继续试只会掩盖真实原因。
+    """
+    bases = _bases_to_try(cfg.resolved_base_url())
+    if not bases:
+        raise ValueError("缺少 Base URL：中转站请填写完整地址，如 https://your-relay.com/v1")
+    endpoints = [f"{b}/chat/completions" for b in bases]
+    do_post = poster or (
+        lambda url, headers, body, t: _http_request("POST", url, headers, body, t)
     )
-    return _extract_openai_text(raw)
+    body_obj: dict = {
+        "model": cfg.resolved_model(),
+        "temperature": 0.2,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+        ],
+    }
+    # 只有官方地址才发 response_format：官方保证 JSON 模式，中转站不保证支持，
+    # 有的会直接 400，有的悄悄忽略——不如只靠提示词 + 外围剥围栏。
+    if _is_official_base(cfg.resolved_base_url()):
+        body_obj["response_format"] = {"type": "json_object"}
+    body = json.dumps(body_obj, ensure_ascii=False).encode("utf-8")
+    headers = _openai_headers(cfg.api_key)
+
+    tried: list[str] = []
+    last_status, last_text = 0, ""
+    for url in endpoints:
+        tried.append(url)
+        status, text = do_post(url, headers, body, timeout)
+        if status < 400:
+            return _extract_openai_text(text)
+        last_status, last_text = status, text
+        if status not in (404, 405):
+            raise ValueError(_explain_status(status, text, url))
+
+    raise ValueError(
+        "所有候选端点都返回 "
+        f"{last_status}，请确认 Base URL：\n  " + "\n  ".join(tried)
+        + f"\n最后一条响应：{(last_text or '').strip()[:200]}"
+    )
 
 
 def _extract_openai_text(raw: str) -> str:
@@ -512,6 +707,7 @@ __all__ = [
     "DEFAULT_CUSTOM_FOLDERS",
     "analyze",
     "build_payload",
+    "probe_endpoint",
     "to_briefs",
     "replace",
 ]

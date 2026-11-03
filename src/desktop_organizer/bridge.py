@@ -261,6 +261,27 @@ class Bridge:
         settings.set_ai_config(cfg, self._settings_path)
         return self.ai_settings()
 
+    def test_ai_connection(self) -> dict[str, Any]:
+        """点"测试连接"：拿当前配置探一次 /models，把真实结论回给界面。
+
+        不复用 ai_suggest 那条路——那条要扫文件、要等模型出建议，一次几十秒，
+        用户点按钮只是想确认"地址和 key 对不对"。这里只发一条 GET，几秒出结果，
+        而且成功时把可用模型列出来，用户可以直接从里面挑一个填进模型框。
+        """
+        cfg = settings.ai_config(self._settings_path)
+        if cfg.provider == "off":
+            return {
+                "ok": False,
+                "base_url_used": "",
+                "models": [],
+                "error": "AI 顾问当前是关闭状态（provider=off），先选一个服务商。",
+                "tried": [],
+            }
+        return ai_assistant.probe_endpoint(
+            base_url=cfg.resolved_base_url(),
+            api_key=cfg.api_key,
+        )
+
     def ai_suggest(self, transport: ai_assistant.Transport | None = None) -> dict[str, Any]:
         """让 AI（或本地规则）为当前扫描结果给出建议。
 

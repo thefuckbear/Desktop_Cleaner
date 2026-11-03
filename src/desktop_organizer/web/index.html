@@ -510,12 +510,14 @@
           </div>
           <div class="field">
             <label>模型（留空用默认）</label>
-            <input id="aiModel" type="text" placeholder="deepseek-chat" autocomplete="off" spellcheck="false">
+            <input id="aiModel" type="text" placeholder="deepseek-chat" autocomplete="off" spellcheck="false" list="aiModelList">
+            <datalist id="aiModelList"></datalist>
           </div>
           <div class="field">
-            <label>网关地址（仅 https）</label>
-            <input id="aiBase" type="text" placeholder="留空使用官方地址" autocomplete="off" spellcheck="false">
+            <label>网关地址（中转站必填）</label>
+            <input id="aiBase" type="text" placeholder="官方可留空；中转站填完整地址，如 opencode.ai/zen/go/v1" autocomplete="off" spellcheck="false">
           </div>
+          <button class="mini" id="btnTestAI">测试连接</button>
           <button class="mini" id="btnSaveAI">保存配置</button>
           <button id="btnAI">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
@@ -932,6 +934,41 @@ async function loadAI(){
   catch(err){ log(`读取 AI 配置失败：${err}`, "bad"); }
 }
 
+async function testAI(){
+  const btn = $("btnTestAI");
+  btn.disabled = true;
+  const old = btn.textContent;
+  btn.textContent = "连接中…";
+  try{
+    // 先落盘再测：用户刚粘进来的 key 还在输入框里，不保存就去测等于测了个旧配置。
+    await api.save_ai_settings(
+      $("aiProvider").value,
+      $("aiKey").value || "",
+      $("aiBase").value || "",
+      $("aiModel").value || "",
+      null
+    );
+    const r = await api.test_ai_connection();
+    const list = $("aiModelList");
+    list.innerHTML = "";
+    (r.models || []).forEach(m => {
+      const o = document.createElement("option");
+      o.value = m;
+      list.appendChild(o);
+    });
+    if (r.ok){
+      const used = r.base_url_used || "";
+      const extra = (r.models || []).length ? `，可用模型 ${r.models.length} 个（点模型框可下拉选）` : "";
+      log(`连接成功：${used}${extra}`, "ok");
+      toast("连接成功");
+    }else{
+      log(`连接失败：${r.error || "未知原因"}`, "bad");
+      toast("连接失败，看日志");
+    }
+  }catch(err){ log(`测试连接出错：${err}`, "bad"); }
+  finally{ btn.disabled = false; btn.textContent = old; }
+}
+
 async function saveAI(){
   try{
     const cfg = await api.save_ai_settings(
@@ -1027,6 +1064,7 @@ $("btnRun").onclick = () => apply(false);
 $("btnBack").onclick = rollback;
 $("btnBulk").onclick = bulkMove;
 $("btnSaveAI").onclick = saveAI;
+$("btnTestAI").onclick = testAI;
 $("btnAI").onclick = askAI;
 $("btnAdoptAll").onclick = adoptAI;
 $("btnSelAll").onclick = () => {

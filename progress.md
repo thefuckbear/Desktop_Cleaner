@@ -149,3 +149,26 @@
 - 想改公开：`gh repo edit thefuckbear/Desktop_Cleaner --visibility public --accept-visibility-change-consequences`
 - 别人（或换台机器）拉下来怎么跑：`git clone` → `pip install pywebview` → 双击 `scripts\launch_gui.pyw`
   或 `python -m desktop_organizer gui`（需 `PYTHONPATH=src`）；打包版要自己跑一次 PyInstaller
+
+## 中转站适配 + 真机跑通（2026-11-03 23:30）
+
+- 起因：用户 `m08927` 指出「我的 key 是 opencode go 的 key，不要预设是 ds 官网 key」。
+  此前把 key 判成无效是**误判**——key 一直是好的，错在代码预设了官方地址。
+- 真机实测四处证据（全部为实际结果）：
+  1. `GET https://opencode.ai/zen/go/v1/models` → **200**，返回 **28 个模型**
+     （`deepseek-v4.1-flash`/`deepseek-v4-pro`/`glm-5.2`/`glm-5.3`/`grok-4.7`/…）
+  2. 缺 `x-opencode-session` 头 → **400 `MissingSessionID`**；补上 → 200。
+     这个错长得像鉴权失败，但跟 key 一点关系没有。
+  3. `response_format: json_object` 该网关**支持**（返回 200），但仍只对官方地址发。
+  4. `analyze()` 端到端：**`degraded=False`、3 条建议**，模型还自己标注
+     「仅凭文件名判断」「6 字节疑似样例文件」——元数据边界守住了。
+- 代码改动：`base_url` 权威化、端点 `{base}` 与 `{base}/v1` 两级回退（仅 404/405 换）、
+  固定 `x-opencode-session`、401 文案带真实 URL 并指向"先核对 Base URL"、
+  中转 key 仅按 `^[a-z]{2,}_sk_` 强证据识别、`_strip_fence` 剥 ```json 围栏。
+- 界面：加「测试连接」按钮（先落盘再探 `/models`，成功把模型灌进 `#aiModelList`
+  供 datalist 下拉），`#aiBase` 提示改成中转站写法。
+- 门禁：`python -m pytest tests/ -q` → **416 passed, 1 skipped**（新增 `tests/test_relay_endpoints.py` 21 条）；
+  exe **6,581,816 bytes / 23:29:41**（重建前备份 `dist\DesktopOrganizer\data`，建后还原）。
+- 踩坑记录：placeholder 里写了 `https://` 直接触发
+  `test_no_external_network_resources`（前端零外网是硬约束），改成不带协议才过——
+  **没有为了过测试去放宽那条断言**。

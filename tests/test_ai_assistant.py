@@ -362,8 +362,12 @@ def test_http_post_maps_401_to_a_key_hint(monkeypatch) -> None:
     try:
         ai._http_post("https://api.example.com/v1", {}, b"{}", 5.0)
     except ValueError as exc:
-        assert "API Key 无效" in str(exc)
+        # 2026-11-03 需求变更：不再一口咬定"API Key 无效"。
+        # 中转站 key 被发去官网同样返回 401，那句文案会把"地址配错"说成"key 坏了"。
+        # 现在必须带上真实 URL，并提示先核对 Base URL。
         assert "HTTP 401" in str(exc)
+        assert "https://api.example.com/v1" in str(exc)
+        assert "Base URL" in str(exc)
     else:  # pragma: no cover - 必须抛
         raise AssertionError("401 应该抛 ValueError")
 
