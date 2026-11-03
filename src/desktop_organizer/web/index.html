@@ -85,6 +85,31 @@
     border:1px solid var(--glass-brd); width:auto; max-width:150px;
   }
   .layoutbar select:hover{color:#d8d3ff; border-color:rgba(109,94,252,.42)}
+  /* 复合策略：一颗键一个 chip，多选后按点击顺序叠加 */
+  .keychips{
+    display:inline-flex; align-items:center; gap:4px; flex:none;
+    padding:3px; border-radius:11px; background:rgba(255,255,255,.04);
+    border:1px solid var(--glass-brd);
+  }
+  .keychip{
+    font:inherit; font-size:11px; padding:4px 9px; border-radius:8px; cursor:pointer;
+    width:auto; display:inline-flex; align-items:center; white-space:nowrap;
+    background:transparent; color:var(--dim); border:1px solid transparent; transition:.15s;
+  }
+  .keychip:hover{color:#d8d3ff; background:rgba(109,94,252,.14)}
+  .keychip.on{background:rgba(34,211,238,.16); color:#a5f3fc; border-color:rgba(34,211,238,.38)}
+  .keychip .ord{
+    margin-left:5px; font-size:10px; opacity:.85;
+    font-variant-numeric:tabular-nums;
+  }
+  /* 按类别批量勾选 */
+  .catpick{display:inline-flex; align-items:center; gap:6px; flex:none}
+  .catpick select{
+    font:inherit; font-size:12px; padding:7px 9px; border-radius:10px; cursor:pointer;
+    background:rgba(255,255,255,.05); color:var(--dim);
+    border:1px solid var(--glass-brd); width:auto; max-width:150px;
+  }
+  .catpick select:hover{color:#d8d3ff; border-color:rgba(109,94,252,.42)}
   .toast .undo{
     margin-left:10px; font-size:11.5px; padding:3px 10px; border-radius:8px; cursor:pointer;
     width:auto; display:inline-flex; align-items:center;
@@ -364,8 +389,9 @@
       <span class="led"></span><span id="permitText">用户目录写入：关</span>
     </button>
     <div class="layoutbar">
-      <select id="layoutStrategy" title="选一种排版规则，只搬图标位置，不动任何文件"></select>
-      <button class="mini" id="btnLayout" title="按所选规则把桌面图标排整齐；可一键撤销">一键整理图标</button>
+      <div class="keychips" id="layoutStrategy" title="可多选：按顺序层层叠加成复合策略，只搬图标位置，不动任何文件"></div>
+      <button class="mini" id="btnLayout" title="按所选规则把桌面图标排整齐">一键整理图标</button>
+      <button class="mini" id="btnUndoLayout" title="把图标恢复到上次整理之前的坐标">撤销整理</button>
     </div>
     <div class="rootbox"><span class="dot"></span>根目录&nbsp;<b id="rootText">—</b></div>
   </header>
@@ -399,6 +425,10 @@
         <div class="search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg>
           <input id="q" type="search" placeholder="按文件名搜索…" autocomplete="off" spellcheck="false">
+        </div>
+        <div class="catpick" title="按类别一次勾选，省得一个个点">
+          <select id="catPick"><option value="">按类别勾选…</option></select>
+          <button class="mini" id="btnCatAll" disabled>选中本类别</button>
         </div>
         <select id="sortBy" title="排序方式">
           <option value="name">文件名 A→Z</option>
@@ -548,7 +578,7 @@ const CAT_COLOR = {
 };
 
 const $ = (id) => document.getElementById(id);
-const state = { rows: [], selected: new Set(), planned: false, lastJournal: "", query: "", sort: "name", cat: "" };
+const state = { rows: [], selected: new Set(), planned: false, lastJournal: "", query: "", sort: "name", cat: "", layoutKeys: ["system_first", "shortcuts_first", "by_name"] };
 let api = null;
 let suggestions = [];
 
@@ -645,6 +675,29 @@ function paintNav(){
       <span class="swatch" style="background:${CAT_COLOR[c] || "#64748b"}"></span>
       <span>${esc(c)}</span><span class="num">${fmtSize(size)}</span></div>`).join("");
   $("navCats").innerHTML = head + rest;
+  paintCatPick(ordered.map(([c]) => c));
+}
+
+// 类别下拉：和左侧图例同一份数据，选一个就能批量勾选
+function paintCatPick(cats){
+  const sel = $("catPick");
+  const keep = sel.value;
+  sel.innerHTML = `<option value="">按类别勾选…</option>` +
+    cats.map((c) => `<option value="${esc(c)}">${esc(c)}</option>`).join("");
+  if (keep && cats.includes(keep)) sel.value = keep;
+  $("btnCatAll").disabled = !sel.value;
+}
+
+// 勾选当前类别下「看得见的那几行」（搜索/筛选后的结果，符合眼睛看到的东西）
+function selectByCategory(cat){
+  const hits = viewRows().filter((r) => r.action_id && r.category === cat);
+  if (!hits.length){
+    toast(`「${cat}」下没有可勾选的文件`);
+    return;
+  }
+  hits.forEach((r) => state.selected.add(r.path));
+  render();
+  log(`按类别勾选「${cat}」：${hits.length} 个`, "ok");
 }
 
 // ---------- 渲染 ----------
@@ -995,6 +1048,18 @@ $("sortBy").addEventListener("change", (e) => { state.sort = e.target.value; ren
 $("mCancel").onclick = () => $("modal").classList.remove("on");
 $("btnPermit").onclick = togglePermit;
 $("btnLayout").onclick = applyLayout;
+$("btnUndoLayout").onclick = undoLayout;
+$("layoutStrategy").addEventListener("click", (e) => {
+  const chip = e.target.closest(".keychip");
+  if (chip) toggleKey(chip.dataset.key);
+});
+$("catPick").addEventListener("change", () => {
+  $("btnCatAll").disabled = !$("catPick").value;
+});
+$("btnCatAll").onclick = () => {
+  const cat = $("catPick").value;
+  if (cat) selectByCategory(cat);
+};
 $("mSave").onclick = saveEdit;
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) $("modal").classList.remove("on"); });
 document.addEventListener("keydown", (e) => {
@@ -1025,29 +1090,54 @@ function showUndoToast(msg){
 async function loadLayoutStrategies(){
   if (!api) return;
   try{
-    const rows = await api.get_layout_strategies();
-    const sel = $("layoutStrategy");
-    sel.innerHTML = rows.map((r) => `<option value="${esc(r.id)}" title="${esc(r.desc)}">${esc(r.name)}</option>`).join("");
+    const rows = await api.get_layout_sort_keys();
+    $("layoutStrategy").innerHTML = rows.map((r) =>
+      `<button class="keychip${state.layoutKeys.includes(r.id) ? " on" : ""}" data-key="${esc(r.id)}" title="${esc(r.desc)}">${esc(r.name)}<span class="ord" data-ord="${esc(r.id)}">${orderOf(r.id)}</span></button>`
+    ).join("");
   }catch(err){
-    log(`读取排版策略失败：${err}`, "err");
+    log(`读取排版选项失败：${err}`, "err");
   }
+}
+
+// 多选的先后就是叠加顺序：先选的先起作用
+function orderOf(id){
+  const i = state.layoutKeys.indexOf(id);
+  return i < 0 ? "" : String(i + 1);
+}
+
+function paintKeys(){
+  document.querySelectorAll("#layoutStrategy .keychip").forEach((el) => {
+    const id = el.dataset.key;
+    el.classList.toggle("on", state.layoutKeys.includes(id));
+    const ord = el.querySelector(".ord");
+    if (ord) ord.textContent = orderOf(id);
+  });
+}
+
+function toggleKey(id){
+  const i = state.layoutKeys.indexOf(id);
+  if (i >= 0) state.layoutKeys.splice(i, 1);
+  else state.layoutKeys.push(id);
+  paintKeys();
 }
 
 async function applyLayout(){
   if (!api) return;
-  const sel = $("layoutStrategy");
-  const id = sel.value || "shortcuts_first";
-  const name = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : id;
+  if (!state.layoutKeys.length){
+    toast("至少选一个排版选项");
+    return;
+  }
+  const keys = [...state.layoutKeys];
   try{
-    const res = await api.apply_desktop_layout(id);
+    const res = await api.apply_desktop_layout("", keys, false);
     if (!res || !res.ok){
       toast((res && res.error) || "排版失败");
       log((res && res.error) || "排版失败", "err");
       return;
     }
     const extra = res.errors && res.errors.length ? `，${res.errors.length} 条提示` : "";
-    showUndoToast(`已按「${name}」排好 ${res.moved}/${res.total} 个图标${extra}`);
-    log(`图标排版完成：${res.moved}/${res.total}（${name}）${extra}`);
+    showUndoToast(`已按「${res.strategy}」排好 ${res.moved}/${res.total} 个图标${extra}`);
+    log(`图标排版完成：${res.moved}/${res.total}（${res.strategy}）${extra}`);
     (res.errors || []).forEach((e) => log(e, "warn"));
   }catch(err){
     log(`排版出错：${err}`, "err");

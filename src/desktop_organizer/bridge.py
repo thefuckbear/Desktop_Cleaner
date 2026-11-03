@@ -11,10 +11,11 @@ from __future__ import annotations
 import dataclasses
 import json
 import os
+import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_assistant, executor, journal, layout, planner, scanner, settings
+from . import ai_assistant, executor, iconpos, journal, layout, planner, scanner, settings
 from .model import FileItem, Plan, PlanAction, Proposal
 from .progress import ProgressEvent
 from .store import PreferenceStore
@@ -393,9 +394,27 @@ class Bridge:
     def get_layout_strategies(self) -> list[dict[str, str]]:
         return layout.strategies()
 
-    def apply_desktop_layout(self, strategy_id: str = "shortcuts_first") -> dict[str, Any]:
+    def get_layout_sort_keys(self) -> list[dict[str, str]]:
+        """可多选的排序键（选几个就按顺序层层叠加成复合策略）。"""
+        return layout.sort_keys()
+
+    def apply_desktop_layout(
+        self,
+        strategy_id: str = "shortcuts_first",
+        sort_keys: list[str] | None = None,
+        group_columns: bool = False,
+    ) -> dict[str, Any]:
         self.notify_progress("apply", 0, 0, message="正在重排桌面图标…")
-        result = layout.apply_layout(strategy_id, undo_path=self._layout_undo_path())
+        selected = sort_keys if sort_keys else strategy_id
+        # 必须显式给 read_positions：不传的话 apply 就写完不校验，
+        # Explorer 异步重排把图标挪走也没人发现（"左上角空一格"就是这么来的）。
+        result = layout.apply_layout(
+            selected,
+            group_columns=bool(group_columns),
+            read_positions=iconpos.read_positions_live,
+            sleep=time.sleep,
+            undo_path=self._layout_undo_path(),
+        )
         self.notify_progress(
             "apply",
             int(result.get("moved") or 0),
