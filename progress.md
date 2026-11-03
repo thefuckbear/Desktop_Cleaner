@@ -1,9 +1,9 @@
 # 进度（progress.md）
 
-> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 15:12（北京时间）
+> 断点续跑的唯一真相。每完成一个子任务立即更新。最后更新：2026-11-03 17:20（北京时间）
 
 ## 当前阶段
-**图标位置真回滚已交付：整理前给桌面图标拍像素坐标快照（Win32 `LVM_GETITEMPOSITION`），回滚时用 `LVM_SETITEMPOSITION` 逐个写回；自动排列开着会先关掉且不自动恢复；另有格点占用验收（不 OCR、不联网）。187 绿 + 真机写回实测通过**
+**三栏现代化 UI + AI 顾问已交付：进度事件推流（百分比）、自由去向与批量改向、AI 建议（Gemini/OpenAI 兼容，默认关闭走本地规则）、WebView2 瘦身参数、左中右三栏布局。282 绿 + exe 已重建 + 截图验证**
 
 ## 时间预算
 | 里程碑 | 计划时段 | 状态 |
@@ -23,6 +23,8 @@
 | 回滚保序（追加） | 23:49–00:20 | 完成（143 绿，沙箱 e2e 保序通过，exe 重建 6503285 bytes） |
 | 回滚全面复原 + 界面检索（追加） | 00:28–00:50 | 完成（提交 b88dd0c，151 绿，沙箱 e2e 四重一致，exe 重建 6507366 bytes） |
 | 图标位置真回滚（追加） | 14:48–15:12 | 完成（用户手工关闭自动排列；187 绿；真机写回实测通过） |
+| 图标回读校验重试（追加） | 15:10–15:40 | 完成（193 绿；修好用户 4 个跑位的 `社会实践*.jpg`） |
+| **GUI 革新 + AI 顾问（追加）** | **16:48–17:20** | **完成（282 绿；进度条/自由去向/批量改向/AI 建议/三栏 UI；exe 重建）** |
 
 ## 已完成
 - [x] 契约三件套：`model.py`、`constants.py`、`guard.py`（含只读通道 check_read_path）
@@ -40,7 +42,14 @@
 - [x] 回滚全面复原：journal 同时记 `birthtime_ns`，`_set_birthtime_win` 用 `SetFileTime` 还原创建时间；回滚后 `shellrefresh.notify_after_rollback` 主动通知 shell 重枚举（b88dd0c）
 - [x] 界面：按文件名搜索 + 5 种排序（名称/修改时间/大小）+ 扫描后不再默认勾选 + 「全选」只勾当前可见行（b88dd0c）
 - [x] 临时 e2e 脚本已删除；CLI rollback 的正确用法是 `rollback --journal <id>`
-- [x] 全量测试 151 passed / 1 skipped
+- [x] 图标位置真回滚：`iconpos.py` 快照/写回 + `gridcheck.py` 格点验收 + executor/bridge/CLI 接线（9b4fd62）
+- [x] 图标写回回读校验与重试：`restore_positions` 每轮回读、不符就重建 writer 重试（10 次 × 150ms），始终没出现的单独归入 `absent` 只提示不判失败
+- [x] 进度条：`progress.py`（`ProgressEvent`/`safe_report`）+ scanner `on_progress` + executor `progress_cb` + bridge `notify_progress` 推 `window.onProgress`（只显示百分比）
+- [x] 自由去向：`targetdir.validate`（拒绝对路径/跨盘/`..`/非法字符）+ bridge 单行 `set_target_dir` 与批量 `set_target_dir_bulk`
+- [x] AI 顾问：`ai_assistant.py`（Gemini / OpenAI 兼容、只传元数据、`http.client` 不用 urllib、失败降级本地规则）+ `settings.ai_config*`（api_key 打码）+ bridge `ai_suggest`/`apply_suggestions`/`save_ai_settings`
+- [x] WebView2 瘦身：`chromium_args()` / `apply_chromium_env()`（11 个 flag，不含 `--single-process`；已有环境变量追加不覆盖）
+- [x] 三栏 UI：左 Donut 空间占用 + 类别筛选、中工作台 + 百分比进度条 + 批量改去向、右 AI 顾问抽屉（服务商/Key/模型/网关/保存/让 AI 提建议/一键采纳）
+- [x] 全量测试 **282 passed / 1 skipped**
 
 ## 实测数据
 | 指标 | 目标 | 实测 | 结论 |
@@ -59,22 +68,32 @@
 | **回滚四重复原 e2e（sandbox\e2e-restore-all）** | 名称/大小/时间全复原 | `NAMES_SAME=True / SIZE_SAME=True / MTIME_SAME=True / BIRTHTIME_SAME=True / LEFTOVER_DIRS=[]` | 达标 |
 | 快捷方式启动（重建后） | < 2s | 2.23s（走的是 exe，PROC=DesktopOrganizer） | 略超目标 |
 | 快捷方式启动（b88dd0c 重建后） | < 2s | 1.98s（PROC=DesktopOrganizer，窗口正常） | 达标 |
-| 全量测试 | 全绿 | 151 passed / 1 skipped | 达标 |
+| 快捷方式启动（GUI 革新版重建，17:18） | < 2s | 1.09s（热 profile，PID=35492，窗口 1180x780） | 达标 |
+| **进程族常驻内存（进程树口径）** | 顾问要求 < 75MB | **WorkingSet 486.3MB / Private 209.5MB（7 个进程）** | **不达标，见遗留 P9** |
+| 单进程常驻内存（旧口径，仅主进程） | 低 | 97.3–105MB | 记录（低估，勿单独引用） |
+| WebView2 flag 生效性 | 生效 | browser 命令行 6/6 flag `PRESENT` | 达标（但 gpu-process 仍被创建） |
+| 全量测试 | 全绿 | **282 passed / 1 skipped** | 达标 |
 
 ## 下一步
 1. 用户在界面上点右上角「用户目录写入：关」→ 变「开」（会弹一次确认）。
-2. 点「扫描目录」→ 用搜索框/排序下拉找到要整理的文件 → 手动勾选（**不再默认勾选任何一项**）→「预览效果（不落盘）」→「真正执行移动」。
-3. 不满意点「回滚上一次」：文件回原位、空目录自动清理、**mtime/atime/创建时间三项均按日志还原并主动刷新 shell**，桌面图标顺序回到整理前。
-4. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、扫描进度条、DPI 缩放验证。
-5. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
+2. 点「扫描目录」→ 用搜索框/排序下拉/左侧类别筛选找到要整理的文件 → 手动勾选（**不再默认勾选任何一项**）→「预览效果（不落盘）」→「真正执行移动」。**进度条在表格上方，只显示百分比**。
+3. 目标目录不满意：在「批量改去向」输入框写 `2026/专案组` 这类相对路径，点「应用到选中」；也支持单行改判。
+4. 想让 AI 出建议：右栏「AI 顾问」选服务商（Gemini / OpenAI 兼容）、填 API Key（只存本地、不下发前端明文）、点「让 AI 提建议」→「一键采纳」。**默认是「关闭（只用本地规则）」，不填也能用**。
+5. 不满意点「回滚上一次」：文件回原位、空目录自动清理、mtime/atime/创建时间三项按日志还原、主动刷新 shell、**桌面图标按整理前快照写回并回读校验**。
+6. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、DPI 缩放验证、**进程族内存 486MB 未达 75MB 目标（P9）**。
+7. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
 
 ## 环境坑（新增）
-- **截图别用 PrintWindow**：界面里 .acts 面板带 ackdrop-filter: blur(22px)，会被提升成独立合成层，PrintWindow(PW_RENDERFULLCONTENT) 拍不到它 —— 表现为「右侧按钮区凭空消失、只剩一张空卡片轮廓」。正确做法：先把窗口切前台（ShowWindow SW_RESTORE + SetForegroundWindow），再 CopyFromScreen 抓窗口矩形。evidence/gui-shot10.png 是正确拍法，gui-shot9.png 是同一个界面的错误拍法（可作反例）。
+- **截图正确姿势（17:16 定稿）**：先 `EnumWindows` 按 PID 列出该进程所有顶层窗口，选 `IsWindowVisible` 且**宽 > 600 且面积最大**的那个（句柄会变，且会有 160x28 的幽灵窗口），再 `PrintWindow(h, hdc, 2)`。`CopyFromScreen` 不管怎么切前台都会抓到挡在前面的别的窗口（实测两次抓到文件资源管理器）。`evidence/gui-shot15.png` / `gui-shot16.png` 是正确产物，`gui-shot11~14` 是失败尝试。
+- **backdrop-filter 会让 PrintWindow 漏内容**：旧界面 `.acts` 带 `blur(22px)`，被提升成独立合成层导致按钮区拍不到；新版只在顶栏保留 backdrop-filter，其余已去掉，故 PrintWindow 可用。
+- **内存别按进程名统计**：`Get-Process msedgewebview2` 会把 Windows 搜索与 clash-verge 的进程一起算进来（实测虚高到 25 进程 / 1134MB）。要按 `ParentProcessId` 递归建进程树。
+- **`Copy-Item "$backup\*"` 还原目录会报** `Container cannot be copied onto existing leaf item`；改用 `Get-ChildItem $backup | ForEach-Object { Copy-Item $_.FullName (Join-Path $dest $_.Name) -Recurse -Force }`。
 
 ## 已知阻碍
 - `schedule_create` 工具不存在 → 用 create_goal 续轮替代（blockers.md B1）
 - 火绒拦截未签名的 PyInstaller exe（decisions.md B6）→ **已由用户加白解决**
 - 冻结 exe 的用户数据落在 `dist\DesktopOrganizer\data`，`--clean` 重建会清空（decisions.md B7，遗留项）
+- **进程族内存 486.3MB（WorkingSet）/ 209.5MB（Private）远超顾问要求的 75MB**（遗留 P9）。已排查：6 个 Chromium flag 全部生效，`--disable-gpu` 并不能阻止 gpu-process 被创建（59.8MB）；WebView2 的 browser/renderer 各约 120MB 属运行时基线。要压下去只能换渲染方案（放弃 == 换掉 pywebview），不在本轮范围。
 
 ## git 最近提交
 - b88dd0c fix: 回滚补齐创建时间并刷新 shell，界面加搜索/排序且不再默认勾选

@@ -12,9 +12,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from typing import Callable
 
 from . import guard
 from .model import FileItem
+from .progress import safe_report
 
 # ---- Windows 文件属性位（st_file_attributes）----
 _FILE_ATTRIBUTE_HIDDEN = 0x2
@@ -128,21 +130,55 @@ def _to_item(entry: _Entry, attrs: int) -> FileItem:
     )
 
 
+def _count_entries(root: str, max_depth: int, follow_symlinks: bool) -> int:
+    """先数一遍条目总数，好让进度条有确定的分母。
+
+    只做 scandir，不做 stat——重新 stat 一遍才是真开销；纯枚举一遍在桌面
+    这种量级（数百项）是毫秒级，换来确定的总数值得。
+    计数失败（权限）时返回 0，进度条退化成"只有 done"。
+    """
+    total = 0
+    stack: list[tuple[str, int]] = [(os.path.abspath(root), 1)]
+    while stack:
+        current, depth = stack.pop()
+        try:
+            with os.scandir(_long(current)) as it:
+                entries = list(it)
+        except OSError:
+            continue
+        total += len(entries)
+        if depth < max_depth:
+            for entry in entries:
+                try:
+                    if entry.is_dir(follow_symlinks=follow_symlinks) and not entry.is_symlink():
+                        stack.append((entry.path, depth + 1))
+                except OSError:
+                    continue
+    return total
+
+
 def scan(
     root: str,
     *,
     max_depth: int = 1,
     follow_symlinks: bool = False,
+    on_progress: Callable[[int, int, str], None] | None = None,
 ) -> list[FileItem]:
     """只读扫描 root，返回按 name 稳定排序的 FileItem 列表。
 
     max_depth：1 = 只看根目录一层；2 = 再看一层子目录；以此类推。
     目录条目本身会出现在结果里（is_dir=True, skipped_reason="directory"），
     交给上层决定是否展示，扫描器不擅自丢数据。
+
+    on_progress(done, total, label)：每扫到一个条目就回调一次，label 是文件名。
+    回调抛异常会被吞掉——进度条坏了不能影响扫描。
     """
     guard.assert_readable(root)
     if max_depth < 1:
         raise ValueError("max_depth 必须 >= 1")
+
+    total = _count_entries(root, max_depth, follow_symlinks) if on_progress else 0
+    done = 0
 
     items: list[FileItem] = []
     # 显式栈代替递归，深度可控且不受 Python 递归上限影响。
@@ -164,6 +200,10 @@ def scan(
         for entry in entries:
             attrs = getattr(entry.st, "st_file_attributes", 0) if entry.st else 0
             items.append(_to_item(entry, attrs))
+            done += 1
+            # 预数一遍可能少报（中途被删/权限变化），这里保证 done 不越过 total，
+            # 否则进度条会出现 103% 这种明显不对的数字。
+            safe_report(on_progress, done, max(total, done), entry.name)
             if (entry.is_dir and not entry.is_reparse and entry.error is None
                     and depth < max_depth):
                 stack.append((entry.path, depth + 1))

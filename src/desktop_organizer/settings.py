@@ -68,3 +68,51 @@ def set_allow_user_dirs(value: bool, path: str | Path | None = None) -> bool:
 def as_dict(path: str | Path | None = None) -> dict[str, Any]:
     """给桥接层用的 JSON 安全快照。"""
     return {_KEY: allow_user_dirs(path)}
+
+
+# ---------------------------------------------------------------- AI 配置
+
+
+_AI_KEY = "ai_config"
+
+
+def ai_config(path: str | Path | None = None) -> Any:
+    """读 AI 配置。损坏/缺失一律回落到默认（provider=off，即纯本地规则）。"""
+    from .ai_assistant import AIConfig  # 延迟导入：避免 settings ↔ ai_assistant 循环
+
+    data = _load(settings_path(path))
+    return AIConfig.from_dict(data.get(_AI_KEY))
+
+
+def set_ai_config(cfg: Any, path: str | Path | None = None) -> Any:
+    """持久化 AI 配置，返回落盘后的实际配置。原子写。"""
+    from .ai_assistant import AIConfig
+
+    target = settings_path(path)
+    data = _load(target)
+    saved = AIConfig.from_dict(cfg.to_dict() if hasattr(cfg, "to_dict") else cfg)
+    data[_AI_KEY] = saved.to_dict()
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    try:
+        tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, target)
+    finally:
+        if tmp.exists():
+            tmp.unlink()
+    return saved
+
+
+def ai_config_dict(path: str | Path | None = None) -> dict[str, Any]:
+    """给前端看的配置快照：**api_key 永远打码**，只回 has_key。
+
+    Key 通过 pywebview 的 js_api 进前端时会出现在窗口内存里，前端不需要明文，
+    也就没有理由把明文送过去。
+    """
+    cfg = ai_config(path)
+    masked = cfg.to_dict()
+    masked["api_key"] = ""
+    masked["has_key"] = bool(cfg.api_key)
+    return masked
+

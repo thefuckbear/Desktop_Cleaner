@@ -13,9 +13,11 @@ from __future__ import annotations
 import os
 import shutil
 from pathlib import Path
+from typing import Callable
 
 from . import guard, iconpos, journal, shellrefresh
 from .model import ExecResult, GuardError, Plan, PlanAction
+from .progress import safe_report
 
 _VALID_KINDS = frozenset({"move"})
 _MAX_SUFFIX = 999
@@ -243,6 +245,7 @@ def execute(
     *,
     allow_user_dirs: bool | None = None,
     capture_icons: bool | None = None,
+    progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> ExecResult:
     """执行计划。``dry_run`` 默认 True，只有显式传 False 才会真正动盘。
 
@@ -282,6 +285,7 @@ def execute(
             result.errors.append(error)
         else:
             result.applied += 1
+        safe_report(progress_cb, seq, len(plan.actions), os.path.basename(action.src))
 
     result.journal_id = jref.id
     if snapshot is not None and result.journal_id:
@@ -362,6 +366,7 @@ def rollback(
     *,
     allow_user_dirs: bool | None = None,
     restore_icons: bool = True,
+    progress_cb: Callable[[int, int, str], None] | None = None,
 ) -> ExecResult:
     """按日志倒序把文件移回原处。源位置已被占用时跳过，绝不覆盖。
 
@@ -381,6 +386,11 @@ def rollback(
     roots: set[str] = set()
 
     for seq, record in enumerate(reversed(targets), start=1):
+        # 每处理一条就报一次进度：回滚是最需要可见反馈的阶段，
+        # 用户刚看到"整理完成"就该看到"正在回滚 3/8"。
+        safe_report(
+            progress_cb, seq, len(targets), os.path.basename(str(record.get("dst", "")))
+        )
         src = str(record.get("src", ""))
         dst = str(record.get("dst", ""))
         if not src or not dst:
