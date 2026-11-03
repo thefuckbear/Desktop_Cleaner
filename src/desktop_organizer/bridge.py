@@ -14,7 +14,7 @@ import os
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_assistant, executor, journal, planner, scanner, settings
+from . import ai_assistant, executor, journal, layout, planner, scanner, settings
 from .model import FileItem, Plan, PlanAction, Proposal
 from .progress import ProgressEvent
 from .store import PreferenceStore
@@ -387,6 +387,30 @@ class Bridge:
     def journals(self) -> dict[str, Any]:
         ids = journal.list_journals()
         return {"total": len(ids), "ids": ids, "last": self._last_journal}
+
+    # ---------- 一键紧凑排版（只搬图标坐标，不动任何文件） ----------
+
+    def get_layout_strategies(self) -> list[dict[str, str]]:
+        return layout.strategies()
+
+    def apply_desktop_layout(self, strategy_id: str = "shortcuts_first") -> dict[str, Any]:
+        self.notify_progress("apply", 0, 0, message="正在重排桌面图标…")
+        result = layout.apply_layout(strategy_id, undo_path=self._layout_undo_path())
+        self.notify_progress(
+            "apply",
+            int(result.get("moved") or 0),
+            int(result.get("total") or 0),
+            message=f"图标排版完成：{result.get('moved')} 个",
+        )
+        return result
+
+    def undo_desktop_layout(self) -> dict[str, Any]:
+        return layout.undo_layout(undo_path=self._layout_undo_path())
+
+    def _layout_undo_path(self) -> Path:
+        # 跟着 settings.json 走：测试里换 settings_path 就能换掉整条链路，
+        # 不会写到真实的 data\ 目录里去。settings_path 为 None 时用默认位置。
+        return settings.settings_path(self._settings_path).parent / "layout_undo.json"
 
     # ---------- 改判学习 ----------
 

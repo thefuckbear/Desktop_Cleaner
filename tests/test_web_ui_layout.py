@@ -83,6 +83,25 @@ def test_ai_key_is_never_echoed_in_full() -> None:
     assert 'type="password"' in html, "API Key 输入框必须遮挡"
 
 
+def test_layout_bar_is_wired() -> None:
+    """一键整理图标：下拉选策略 + 按钮 + 撤销入口。"""
+    html = _html()
+    assert 'id="layoutStrategy"' in html, "缺少排版策略下拉"
+    assert 'id="btnLayout"' in html, "缺少一键整理按钮"
+    assert "apply_desktop_layout" in html, "没有调用后端排版接口"
+    assert "get_layout_strategies" in html, "没有拉取策略清单"
+    assert "undo_desktop_layout" in html, "缺少撤销调用"
+    assert "toastUndo" in html, "撤销提示缺少按钮"
+
+
+def test_layout_bar_select_is_not_stretched_by_global_button_rule() -> None:
+    """全局 button{width:100%} 教训：新的小控件必须自己声明宽度。"""
+    body = _css_rule(".layoutbar")
+    assert "inline-flex" in body
+    sel = _css_rule(".layoutbar select")
+    assert "width:auto" in sel
+
+
 def test_no_external_network_resources_still_holds() -> None:
     html = _html()
     for pat in ("http://", "https://", "//cdn.", 'src="//'):

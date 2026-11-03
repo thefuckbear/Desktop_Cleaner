@@ -200,12 +200,11 @@ def restore_positions(
 
     absent: list[str] = []
     actual: dict[str, tuple[int, int]] = {}
+    target: dict[str, tuple[int, int]] = {}
     if read_positions is not None:
         pause = sleep or time.sleep
         snapshot_items: dict = snapshot.get("items") or {}
-        target: dict[str, tuple[int, int]] = {
-            item["name"]: (item["x"], item["y"]) for item in wants
-        }
+        target = {item["name"]: (item["x"], item["y"]) for item in wants}
         # 快照里所有名字都进目标集：刚被移回桌面的文件，Explorer 可能还没来得及把它
         # 插进 ListView（current_names 里没有）。一旦它迟到出现，也必须被写回，
         # 否则会被静默跳过——用户看到的就是「有几个文件跑到别处去了」。
@@ -256,7 +255,9 @@ def restore_positions(
             )
 
     return {
-        "restored": restored,
+        # 用户问的是「回去几个」，所以 restored 报本次写回的图标总数，
+        # 而不是最后一次重试只修了几个——重试把计数清零过，直接用会得到 17/249 这种假数字。
+        "restored": len(target) if target else restored,
         "skipped": skipped,
         "autoarrange_was_on": autoarrange_was_on,
         "errors": errors,

@@ -77,6 +77,19 @@
   .permit:hover{background:rgba(109,94,252,.16); color:#d8d3ff}
   .permit.on{background:rgba(34,211,238,.14); color:#a5f3fc; border-color:rgba(34,211,238,.42)}
   .permit.on .led{background:var(--cyan); box-shadow:0 0 10px var(--cyan)}
+  /* 一键整理图标：下拉 + 按钮 + 撤销。都覆盖全局 button{width:100%}。 */
+  .layoutbar{display:inline-flex; align-items:center; gap:6px; flex:none; white-space:nowrap}
+  .layoutbar select{
+    font:inherit; font-size:11.5px; padding:6px 8px; border-radius:10px; cursor:pointer;
+    background:rgba(255,255,255,.05); color:var(--dim);
+    border:1px solid var(--glass-brd); width:auto; max-width:150px;
+  }
+  .layoutbar select:hover{color:#d8d3ff; border-color:rgba(109,94,252,.42)}
+  .toast .undo{
+    margin-left:10px; font-size:11.5px; padding:3px 10px; border-radius:8px; cursor:pointer;
+    width:auto; display:inline-flex; align-items:center;
+    background:rgba(34,211,238,.16); color:#a5f3fc; border:1px solid rgba(34,211,238,.42);
+  }
 
   /* ---- 三栏骨架 ---- */
   .shell{
@@ -350,6 +363,10 @@
     <button class="permit" id="btnPermit" title="默认关闭：不加锁就不能整理真实桌面">
       <span class="led"></span><span id="permitText">用户目录写入：关</span>
     </button>
+    <div class="layoutbar">
+      <select id="layoutStrategy" title="选一种排版规则，只搬图标位置，不动任何文件"></select>
+      <button class="mini" id="btnLayout" title="按所选规则把桌面图标排整齐；可一键撤销">一键整理图标</button>
+    </div>
     <div class="rootbox"><span class="dot"></span>根目录&nbsp;<b id="rootText">—</b></div>
   </header>
 
@@ -977,6 +994,7 @@ $("q").addEventListener("keydown", (e) => {
 $("sortBy").addEventListener("change", (e) => { state.sort = e.target.value; render(); });
 $("mCancel").onclick = () => $("modal").classList.remove("on");
 $("btnPermit").onclick = togglePermit;
+$("btnLayout").onclick = applyLayout;
 $("mSave").onclick = saveEdit;
 $("modal").addEventListener("click", (e) => { if (e.target === $("modal")) $("modal").classList.remove("on"); });
 document.addEventListener("keydown", (e) => {
@@ -991,6 +1009,67 @@ $("mImp").addEventListener("change", () => {
   $("mDir").value = `${$("mCat").value}/${IMP_LABEL[$("mImp").value] || "常用"}`;
 });
 
+// ---------- 一键整理图标（只搬坐标，不动文件） ----------
+function showUndoToast(msg){
+  const el = $("toast");
+  el.innerHTML = `${esc(msg)}<button class="undo" id="toastUndo">撤销</button>`;
+  el.classList.add("on");
+  clearTimeout(el._t);
+  el._t = setTimeout(() => el.classList.remove("on"), 9000);
+  $("toastUndo").onclick = async () => {
+    el.classList.remove("on");
+    await undoLayout();
+  };
+}
+
+async function loadLayoutStrategies(){
+  if (!api) return;
+  try{
+    const rows = await api.get_layout_strategies();
+    const sel = $("layoutStrategy");
+    sel.innerHTML = rows.map((r) => `<option value="${esc(r.id)}" title="${esc(r.desc)}">${esc(r.name)}</option>`).join("");
+  }catch(err){
+    log(`读取排版策略失败：${err}`, "err");
+  }
+}
+
+async function applyLayout(){
+  if (!api) return;
+  const sel = $("layoutStrategy");
+  const id = sel.value || "shortcuts_first";
+  const name = sel.options[sel.selectedIndex] ? sel.options[sel.selectedIndex].text : id;
+  try{
+    const res = await api.apply_desktop_layout(id);
+    if (!res || !res.ok){
+      toast((res && res.error) || "排版失败");
+      log((res && res.error) || "排版失败", "err");
+      return;
+    }
+    const extra = res.errors && res.errors.length ? `，${res.errors.length} 条提示` : "";
+    showUndoToast(`已按「${name}」排好 ${res.moved}/${res.total} 个图标${extra}`);
+    log(`图标排版完成：${res.moved}/${res.total}（${name}）${extra}`);
+    (res.errors || []).forEach((e) => log(e, "warn"));
+  }catch(err){
+    log(`排版出错：${err}`, "err");
+  }
+}
+
+async function undoLayout(){
+  if (!api) return;
+  try{
+    const res = await api.undo_desktop_layout();
+    if (!res || !res.ok){
+      toast((res && res.error) || "撤销失败");
+      log((res && res.error) || "撤销失败", "err");
+      return;
+    }
+    toast(`已撤销排版：${res.restored} 个图标回到原位`);
+    log(`撤销排版：恢复 ${res.restored} 个，校验 ${res.verified === false ? "未通过" : "通过"}`);
+  }catch(err){
+    log(`撤销出错：${err}`, "err");
+  }
+}
+
 // pywebview 注入完成后启动
 function boot(){
   api = window.pywebview.api;
@@ -998,6 +1077,7 @@ function boot(){
   refreshPermit();
   loadAI();
   paintNav();
+  loadLayoutStrategies();
 }
 if (window.pywebview && window.pywebview.api){
   boot();
