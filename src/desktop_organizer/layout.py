@@ -172,6 +172,22 @@ def columns_available(work_area: ScreenWorkArea) -> int:
     return max(1, span // max(1, work_area.cell_w))
 
 
+def work_area_bounds(work_area: ScreenWorkArea) -> dict:
+    """转成 iconpos.clamp_position 认的边界字典。
+
+    单个字段就不做成 dict 字面量塞在两处：夹取逻辑只看这四个边和格距，
+    多一份手写拷贝就多一处会走样的地方。
+    """
+    return {
+        "left": work_area.left,
+        "top": work_area.top,
+        "right": work_area.right,
+        "bottom": work_area.bottom,
+        "cell_w": work_area.cell_w,
+        "cell_h": work_area.cell_h,
+    }
+
+
 def compute_compact_grid(
     items: Sequence[DesktopIconInfo],
     work_area: ScreenWorkArea,
@@ -222,32 +238,78 @@ def _user32():  # pragma: no cover - 只有真机路径会走
     return user32
 
 
-def measure_work_area() -> ScreenWorkArea:  # pragma: no cover - 真机
-    """读真实工作区（避让任务栏）与系统图标间距。取不到就用保守默认值。"""
-    user32 = _user32()
-    cell_w = int(user32.GetSystemMetrics(_SM_CXICONSPACING)) or iconpos.DEFAULT_CELL_W
-    cell_h = int(user32.GetSystemMetrics(_SM_CYICONSPACING)) or iconpos.DEFAULT_CELL_H
-    if cell_w <= 0:
-        cell_w = iconpos.DEFAULT_CELL_W
-    if cell_h <= 0:
-        cell_h = iconpos.DEFAULT_CELL_H
+_MIN_STEP = 30
+_MAX_STEP = 300
 
-    rect = wintypes.RECT()
-    ok = user32.SystemParametersInfoW(_SPI_GETWORKAREA, 0, ctypes.byref(rect), 0)
-    if ok:
-        return ScreenWorkArea(
-            left=int(rect.left),
-            top=int(rect.top),
-            right=int(rect.right),
-            bottom=int(rect.bottom),
-            cell_w=cell_w,
-            cell_h=cell_h,
-        )
+
+def _common_step(values: Sequence[int]) -> int | None:
+    """一维坐标里最常见的相邻差。太小的差是误差、太大的是跨列/跨屏，都不算步长。"""
+    ordered = sorted({int(v) for v in values})
+    if len(ordered) < 2:
+        return None
+    diffs = [b - a for a, b in zip(ordered, ordered[1:])]
+    usable = [d for d in diffs if _MIN_STEP <= d <= _MAX_STEP]
+    if not usable:
+        return None
+    counts: dict[int, int] = {}
+    for d in usable:
+        counts[d] = counts.get(d, 0) + 1
+    best = max(counts.values())
+    # 并列时取较小的：宁可格子略小，也不要算大了让图标重叠
+    return min(d for d, n in counts.items() if n == best)
+
+
+def icon_step_from_positions(
+    items: Sequence[DesktopIconInfo],
+) -> tuple[int, int]:
+    """从桌面上图标的真实间距推出网格步长。
+
+    为什么不用系统 API：实测 `GetSystemMetrics(38/39)` 给的是 75/75，
+    `LVM_GETITEMSPACING` 给的是 96/81，而真实步长是 **75/104**。
+    按 75 当行距排版，新坐标会落在 104 网格的格间，被顺手对齐后两个图标抢同一格。
+    桌面自己的坐标是唯一不会骗人的证据。
+    """
+    if not items:
+        return iconpos.DEFAULT_CELL_W, iconpos.DEFAULT_CELL_H
+    step_w = _common_step([it.current_x for it in items])
+    step_h = _common_step([it.current_y for it in items])
+    return (
+        step_w if step_w else iconpos.DEFAULT_CELL_W,
+        step_h if step_h else iconpos.DEFAULT_CELL_H,
+    )
+
+
+def measure_work_area(
+    *,
+    rect: tuple[int, int, int, int] | None = None,
+    icons: Sequence[DesktopIconInfo] | None = None,
+) -> ScreenWorkArea:
+    """读真实工作区（避让任务栏），格距用图标实测间距。
+
+    `rect` / `icons` 只在测试里注入；真机路径下走 SystemParametersInfoW。
+    """
+    cell_w, cell_h = icon_step_from_positions(icons or [])
+
+    bounds = rect
+    if bounds is None:  # pragma: no cover - 真机
+        user32 = _user32()
+        area = wintypes.RECT()
+        if user32.SystemParametersInfoW(_SPI_GETWORKAREA, 0, ctypes.byref(area), 0):
+            bounds = (int(area.left), int(area.top), int(area.right), int(area.bottom))
+        else:
+            bounds = (
+                0,
+                0,
+                int(user32.GetSystemMetrics(0)) or 1920,
+                int(user32.GetSystemMetrics(1)) or 1080,
+            )
+
+    left, top, right, bottom = (int(v) for v in bounds)
     return ScreenWorkArea(
-        left=0,
-        top=0,
-        right=int(user32.GetSystemMetrics(0)) or 1920,
-        bottom=int(user32.GetSystemMetrics(1)) or 1080,
+        left=left,
+        top=top,
+        right=right,
+        bottom=bottom,
         cell_w=cell_w,
         cell_h=cell_h,
     )
@@ -305,7 +367,6 @@ def apply_layout(
     """执行一次排版。顺序是死的：先备份、再关自动排列、最后写坐标。"""
     strategy_id = normalize_strategy(strategy_id)
     collect = collect or collect_icons
-    measure = measure or measure_work_area
     snapshot = snapshot or (lambda: iconpos.snapshot_live())
     save = save or _save_undo
     get_autoarrange = get_autoarrange or iconpos.get_autoarrange
@@ -336,7 +397,8 @@ def apply_layout(
     breaks = column_break_indices(groups)
 
     try:
-        work_area = measure()
+        # 不传 measure 时用刚收集到的图标算格距——省一次桌面枚举，也保证两处看到的是同一批
+        work_area = measure() if measure else measure_work_area(icons=items)
     except Exception as exc:  # noqa: BLE001
         work_area = ScreenWorkArea(0, 0, 1920, 1080, iconpos.DEFAULT_CELL_W, iconpos.DEFAULT_CELL_H)
         errors.append(f"读取工作区失败，改用默认分辨率：{exc}")

@@ -94,6 +94,35 @@ def build_snapshot(
     }
 
 
+def clamp_position(x: int, y: int, bounds: dict | None) -> tuple[int, int]:
+    """把坐标夹进当前工作区。
+
+    bounds 为 None（或不完整）时原样返回——调用方没给边界，就不要凭空猜。
+
+    为什么必须夹：快照是按当时的屏幕算的。换了显示器 / 调了缩放 / 插了外接屏之后，
+    旧坐标可能落在当前工作区之外，写回去图标就从桌面消失了。消失比错位严重得多：
+    错位用户看得见、能拖回来；消失用户根本不知道有东西丢了。
+    """
+    if not bounds:
+        return x, y
+    try:
+        left = int(bounds["left"])
+        top = int(bounds["top"])
+        right = int(bounds["right"])
+        bottom = int(bounds["bottom"])
+    except (KeyError, TypeError, ValueError):
+        return x, y
+    cell_w = int(bounds.get("cell_w") or DEFAULT_CELL_W)
+    cell_h = int(bounds.get("cell_h") or DEFAULT_CELL_H)
+    if right - left < cell_w or bottom - top < cell_h:
+        return x, y
+    max_x = right - left - cell_w
+    max_y = bottom - top - cell_h
+    cx = min(max(x - left, 0), max_x) + left
+    cy = min(max(y - top, 0), max_y) + top
+    return int(cx), int(cy)
+
+
 def plan_restore(snapshot: dict, current_names: Sequence[str]) -> list[dict]:
     """算「哪些名字能写回」——快照里存在、当前桌面也还在的项。"""
     alive = set(current_names)
@@ -138,6 +167,7 @@ def restore_positions(
     read_positions: Callable[[], dict[str, tuple[int, int]]] | None = None,
     make_writer: Callable[[], Callable[[str, int, int], Any]] | None = None,
     sleep: Callable[[float], Any] | None = None,
+    bounds: dict | None = None,
     attempts: int = 10,
     delay: float = 0.15,
 ) -> dict:
@@ -153,8 +183,20 @@ def restore_positions(
     「写 → 读 → 不一致就再写」的收敛循环，收敛不了就如实报错。
     """
     wants = plan_restore(snapshot, current_names)
+    clamped = 0
+    if bounds:
+        # 夹回屏幕内，并记下改了几个——夹过就是「没回到原位」，得让用户知道
+        for item in wants:
+            cx, cy = clamp_position(item["x"], item["y"], bounds)
+            if (cx, cy) != (item["x"], item["y"]):
+                clamped += 1
+                item["x"], item["y"] = cx, cy
     autoarrange_was_on = False
     errors: list[str] = []
+    if clamped:
+        errors.append(
+            f"{clamped} 个图标的原坐标在当前工作区之外（换过分辨率或缩放？），已夹回屏幕内"
+        )
 
     try:
         autoarrange_was_on = bool(get_autoarrange())
@@ -184,6 +226,7 @@ def restore_positions(
             "verified": True if read_positions else None,
             "mismatched": [],
             "attempts_used": 0,
+            "clamped": clamped,
         }
 
     def write_all(items: Sequence[dict], writer: Callable[[str, int, int], Any]) -> None:
@@ -209,7 +252,9 @@ def restore_positions(
         # 插进 ListView（current_names 里没有）。一旦它迟到出现，也必须被写回，
         # 否则会被静默跳过——用户看到的就是「有几个文件跑到别处去了」。
         for name, pos in snapshot_items.items():
-            target.setdefault(name, (int(pos["x"]), int(pos["y"])))
+            target.setdefault(
+                name, clamp_position(int(pos["x"]), int(pos["y"]), bounds)
+            )
 
         for attempt in range(1, max(1, attempts) + 1):
             attempts_used = attempt
@@ -266,6 +311,7 @@ def restore_positions(
         "mismatched": mismatched,
         "absent": absent,
         "attempts_used": attempts_used,
+        "clamped": clamped,
     }
 
 

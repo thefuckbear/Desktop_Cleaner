@@ -347,6 +347,15 @@ def _restore_icons(journal_id: str, result: ExecResult) -> None:
         result.errors.append(f"读取当前桌面图标失败，跳过位置复原：{exc}")
         return
 
+    # 夹取边界：换了分辨率/缩放之后，快照里的旧坐标可能落在屏幕外。
+    # 拿不到工作区就不夹（宁可原样写，也不要凭空猜一个边界把图标挤到一起）。
+    try:
+        from . import layout
+
+        bounds = layout.work_area_bounds(layout.measure_work_area())
+    except Exception:  # noqa: BLE001
+        bounds = None
+
     info = iconpos.restore_positions(
         snapshot,
         current_names=current_names,
@@ -355,6 +364,7 @@ def _restore_icons(journal_id: str, result: ExecResult) -> None:
         set_autoarrange=iconpos.set_autoarrange,
         read_positions=iconpos.read_positions_live,
         make_writer=iconpos.make_position_writer,
+        bounds=bounds,
     )
     result.icons = info
     for err in info.get("errors") or []:
