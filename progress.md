@@ -68,6 +68,9 @@
 4. 遗留：M5 红队子集（中断恢复/文件占用/云占位/超长路径/权限拒绝）、P1 分类权重调优、扫描进度条、DPI 缩放验证。
 5. 若重新打包：`python -m PyInstaller --noconfirm --clean DesktopOrganizer.spec`，信任区按路径匹配无需重新加白；**重建会清空 `dist\DesktopOrganizer\data`（含 settings.json 与 journal）**，即许可状态会回到默认关闭。CLI 回滚用法是 `rollback --journal <id>`（不是位置参数）。
 
+## 环境坑（新增）
+- **截图别用 PrintWindow**：界面里 .acts 面板带 ackdrop-filter: blur(22px)，会被提升成独立合成层，PrintWindow(PW_RENDERFULLCONTENT) 拍不到它 —— 表现为「右侧按钮区凭空消失、只剩一张空卡片轮廓」。正确做法：先把窗口切前台（ShowWindow SW_RESTORE + SetForegroundWindow），再 CopyFromScreen 抓窗口矩形。evidence/gui-shot10.png 是正确拍法，gui-shot9.png 是同一个界面的错误拍法（可作反例）。
+
 ## 已知阻碍
 - `schedule_create` 工具不存在 → 用 create_goal 续轮替代（blockers.md B1）
 - 火绒拦截未签名的 PyInstaller exe（decisions.md B6）→ **已由用户加白解决**
