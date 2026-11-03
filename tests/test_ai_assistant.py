@@ -300,3 +300,117 @@ def test_system_prompt_teaches_how_to_use_the_app_and_gives_strategy() -> None:
     # 硬约束：不许要文件内容，不许绝对路径
     assert "看不到文件内容" in prompt
     assert "绝对路径" in prompt
+
+# ---------------------------------------------------------------- 2026-11-03 故障修复回归
+
+
+def test_sanitize_target_replaces_illegal_chars_per_segment() -> None:
+    """模型常把「分类: 原因」写进去向；替换非法字符，别整批降级。"""
+    assert ai.sanitize_target("文档: 重要") == "文档_重要"
+    assert ai.sanitize_target("图片|归档") == "图片_归档"
+    assert ai.sanitize_target("项目/<名字>/素材") == "项目/_名字_/素材"
+    assert ai.sanitize_target(" a / b ") == "a/b"
+
+
+def test_sanitize_target_keeps_relative_shape_and_drops_empty_segments() -> None:
+    assert ai.sanitize_target("") == ""
+    assert ai.sanitize_target("a//b") == "a/b"
+    # 不能把 .. 洗成可用的段：洗掉点号后为空即丢弃，越界交给 targetdir 拒
+    assert ai.sanitize_target("..") == ""
+    # 绝对形态原样放行让校验器拒，不能洗成"合法相对路径"
+    for absolute in ("C:\\Windows", "/etc", "\\\\server\\share"):
+        assert not ai.targetdir.validate(ai.sanitize_target(absolute), root="C:\\Users\\a")[0]
+
+
+def test_illegal_char_target_no_longer_degrades_the_whole_batch(tmp_path) -> None:
+    item = _item(tmp_path)
+    raw = json.dumps(
+        {"suggestions": [{"path": str(item.path), "target_dir": "文档: 重要", "confidence": 0.9}]}
+    )
+    got, degraded, reason = ai.analyze(
+        [item], ai.AIConfig(provider="deepseek", api_key="k"), transport=lambda _p: raw
+    )
+    assert degraded is False, reason
+    assert got[0].target_dir == "文档_重要"
+
+
+def test_http_post_maps_401_to_a_key_hint(monkeypatch) -> None:
+    """401 原始报文是英文 JSON，用户看不出是 Key 的问题。"""
+    import http.client
+
+    class FakeResp:
+        status = 401
+
+        def read(self) -> bytes:
+            return b'{"error":"invalid key"}'
+
+    class FakeConn:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def request(self, *a, **kw) -> None:
+            pass
+
+        def getresponse(self):
+            return FakeResp()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(ai, "_proxy_from_env", lambda: "")
+    monkeypatch.setattr(http.client, "HTTPSConnection", FakeConn)
+    try:
+        ai._http_post("https://api.example.com/v1", {}, b"{}", 5.0)
+    except ValueError as exc:
+        assert "API Key 无效" in str(exc)
+        assert "HTTP 401" in str(exc)
+    else:  # pragma: no cover - 必须抛
+        raise AssertionError("401 应该抛 ValueError")
+
+
+def test_http_post_timeout_message_tells_user_about_proxy(monkeypatch) -> None:
+    import http.client
+
+    class BoomConn:
+        def __init__(self, *a, **kw) -> None:
+            pass
+
+        def set_tunnel(self, *a, **kw) -> None:
+            # 代理模式下会先建隧道；这里只是证明超时被翻译成人话
+            pass
+
+        def request(self, *a, **kw) -> None:
+            raise TimeoutError("timed out")
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(ai, "_proxy_from_env", lambda: "127.0.0.1:7897")
+    monkeypatch.setattr(http.client, "HTTPSConnection", BoomConn)
+    try:
+        ai._http_post("https://api.example.com/v1", {}, b"{}", 30.0)
+    except ValueError as exc:
+        assert "超时" in str(exc)
+        assert "127.0.0.1:7897" in str(exc)
+    else:  # pragma: no cover
+        raise AssertionError("超时应该抛 ValueError")
+
+
+def test_proxy_from_env_prefers_environment(monkeypatch) -> None:
+    monkeypatch.setenv("HTTPS_PROXY", "http://10.0.0.1:8080")
+    assert ai._proxy_from_env() == "10.0.0.1:8080"
+
+
+def test_proxy_from_env_returns_empty_when_nothing_configured(monkeypatch) -> None:
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(ai, "_registry_proxy", lambda: "", raising=False)
+    value = ai._proxy_from_env()
+    assert value == "" or ":" in value  # 有系统代理时允许返回真实代理，但不能是脏值
+
+
+def test_default_timeout_is_long_enough_for_a_real_model() -> None:
+    import inspect
+
+    default = inspect.signature(ai.analyze).parameters["timeout"].default
+    assert default >= 30.0

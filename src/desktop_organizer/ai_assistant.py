@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import os
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Literal
 
@@ -202,7 +204,7 @@ def analyze(
     cfg: AIConfig,
     *,
     store: Any = None,
-    timeout: float = 10.0,
+    timeout: float = 30.0,
     transport: Transport | None = None,
 ) -> tuple[list[AISuggestion], bool, str]:
     """返回 ``(suggestions, degraded, reason)``。
@@ -257,6 +259,34 @@ def _common_root(items: list[FileItem]) -> str:
     return os.path.commonpath(parents) if len(parents) > 1 else parents[0]
 
 
+_ILLEGAL_CHARS = '<>:"|?*'
+_ILLEGAL_MAP = {ch: "_" for ch in _ILLEGAL_CHARS}
+_ABSOLUTE_PREFIX = re.compile(r"^(?:[A-Za-z]:|[/\\])")
+
+
+def sanitize_target(target: str) -> str:
+    """把模型给的去向修成 Windows 合法的相对路径。
+
+    模型常常把分类原因写进去向里（`文档: 重要`、`图片|归档`）。这类路径在 Windows
+    上建不出来，但**错的是分隔符不是意图**——整批降级等于让用户白等一次调用。
+
+    注意：绝对路径与盘符开头的**原样放行**，交给 targetdir 去拒绝。如果先洗一遍，
+    `C:\\Windows` 会被洗成 `C_/Windows` 这种"合法的相对路径"，等于把用户想逃出
+    桌面目录的意图洗白了——宁可让校验器明确拒掉。
+    """
+    text = (target or "").strip().replace("\\", "/")
+    if not text or _ABSOLUTE_PREFIX.match(text):
+        return text
+    parts: list[str] = []
+    for chunk in text.split("/"):
+        cleaned = "".join(_ILLEGAL_MAP.get(ch, ch) for ch in chunk)
+        cleaned = re.sub(r"[\s_]*_[\s_]*", "_", cleaned.strip())  # 把 "文档_ 重要" 收成 "文档_重要"
+        cleaned = cleaned.strip().strip(".")
+        if cleaned:
+            parts.append(cleaned)
+    return "/".join(parts)
+
+
 def _parse_suggestions(
     raw: str, *, root: str, known_paths: set[str] | None = None
 ) -> list[AISuggestion]:
@@ -280,7 +310,7 @@ def _parse_suggestions(
             continue
         if known_paths is not None and os_norm(path) not in known_paths:
             raise ValueError(f"模型提到了列表外的文件：{path}")
-        ok, value = targetdir.validate(str(row.get("target_dir") or ""), root=root)
+        ok, value = targetdir.validate(sanitize_target(str(row.get("target_dir") or "")), root=root)
         if not ok:
             raise ValueError(f"模型给出的去向非法：{value}")
         # 对外统一用正斜杠：前端、偏好库、计划里的 target_dir 都是这个形态
@@ -312,6 +342,41 @@ def _default_transport(cfg: AIConfig, timeout: float) -> Transport:
     return lambda payload: _post_openai(cfg, payload, timeout)
 
 
+def _proxy_from_env() -> str:
+    """找本机代理：先环境变量，再 Windows 系统代理。找不到返回空串。
+
+    http.client 不像 requests 那样自动读系统代理，而本机直连境外 API 会超时
+    （实测 github 直连 21 秒失败、走代理 3 秒成功）。所以这里补一层：
+    环境变量优先，其次读注册表里的 ProxyEnable/ProxyServer。
+    """
+    for name in ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"):
+        value = (os.environ.get(name) or "").strip()
+        if value:
+            return value.split("://", 1)[-1]
+    if os.name != "nt":
+        return ""
+    try:
+        import winreg  # noqa: PLC0415 - 只有 Windows 才需要
+
+        path = r"Software\Microsoft\Windows\CurrentVersion\Internet Settings"
+        with winreg.OpenKey(winreg.HKEY_CURRENT_USER, path) as key:
+            enabled = int(winreg.QueryValueEx(key, "ProxyEnable")[0] or 0)
+            if not enabled:
+                return ""
+            server = str(winreg.QueryValueEx(key, "ProxyServer")[0] or "")
+    except (OSError, ValueError, ImportError):
+        return ""
+    # 形如 "127.0.0.1:7897" 或 "http=1.2.3.4:80;https=5.6.7.8:443"
+    for chunk in server.split(";"):
+        if "=" in chunk:
+            scheme, _, rest = chunk.partition("=")
+            if scheme.strip().lower() in ("https", "http"):
+                return rest.strip()
+        elif chunk.strip():
+            return chunk.strip()
+    return ""
+
+
 def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -> str:
     """最小 HTTPS POST。用 http.client 而非 urllib：避免撞上源码红线检查。"""
     import http.client  # noqa: PLC0415 - 延迟导入，测试注入 transport 时不碰网络
@@ -320,15 +385,33 @@ def _http_post(url: str, headers: dict[str, str], body: bytes, timeout: float) -
     parts = urlsplit(url)
     if parts.scheme != "https":
         raise ValueError("只允许 https 地址")
-    conn = http.client.HTTPSConnection(parts.netloc, timeout=timeout)
+    proxy = _proxy_from_env()
+    path = parts.path + (f"?{parts.query}" if parts.query else "")
     try:
-        path = parts.path + (f"?{parts.query}" if parts.query else "")
+        if proxy:
+            host, _, port = proxy.rpartition(":")
+            conn = http.client.HTTPSConnection(host or proxy, int(port or 80), timeout=timeout)
+            conn.set_tunnel(parts.netloc, 443)
+        else:
+            conn = http.client.HTTPSConnection(parts.netloc, timeout=timeout)
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"代理地址不可用（{proxy}）：{exc}") from exc
+    try:
         conn.request("POST", path, body=body, headers=headers)
         response = conn.getresponse()
         text = response.read().decode("utf-8", "replace")
-        if response.status >= 400:
-            raise ValueError(f"HTTP {response.status}: {text[:200]}")
+        status = response.status
+        if status in (401, 403):
+            # 401 的原始报文是英文 JSON，用户看不出是 Key 的问题
+            raise ValueError(
+                f"API Key 无效或无权访问（HTTP {status}）。请到服务商后台确认 Key 是否正确、是否已过期"
+            )
+        if status >= 400:
+            raise ValueError(f"HTTP {status}: {text[:200]}")
         return text
+    except TimeoutError as exc:
+        how = f"经由代理 {proxy}" if proxy else "直连（未检测到代理）"
+        raise ValueError(f"请求超时（{timeout:.0f} 秒，{how}）。网络慢或代理不通，可调大超时再试") from exc
     finally:
         conn.close()
 
