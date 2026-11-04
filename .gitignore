@@ -57,3 +57,4 @@ credentials*
 *.swp
 Thumbs.db
 desktop.ini
+dist_new/
