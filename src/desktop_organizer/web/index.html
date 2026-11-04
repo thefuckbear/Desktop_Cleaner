@@ -523,6 +523,11 @@
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M18.4 5.6l-2.1 2.1M7.7 16.3l-2.1 2.1"/></svg>
             让 AI 提建议
           </button>
+          <div class="keychips" id="sugFilter">
+            <button class="keychip on" data-sug="all">全部</button>
+            <button class="keychip" data-sug="high">高置信</button>
+            <button class="keychip" data-sug="low">待确认</button>
+          </div>
           <div class="ai-list" id="aiList">
             <div class="sug"><span>还没有建议。扫描后点上面的按钮。</span></div>
           </div>
@@ -919,14 +924,31 @@ async function bulkMove(){
 }
 
 // ---------- AI 顾问 ----------
+// 各服务商的默认地址/模型由后端下发（前端源码里不许出现外网地址字面量）。
+let aiDefaults = {base_urls:{}, models:{}};
+
 function paintAI(cfg){
   if (!cfg) return;
+  if (cfg.defaults) aiDefaults = cfg.defaults;
   $("aiProvider").value = cfg.provider || "deepseek";
   $("aiModel").value = cfg.model || "";
   $("aiBase").value = cfg.base_url || "";
   $("aiKey").value = "";
   $("aiKey").placeholder = cfg.has_key ? "已保存（留空则沿用）" : "粘贴你的 API Key";
   $("aiStatus").textContent = cfg.provider === "off" ? "本地规则" : (cfg.has_key ? "已配置" : "缺 Key");
+}
+
+// 切服务商时补默认值：只填**空的**，用户填过的一个字都不动。
+// 填了别人的地址又切回来，那是用户自己的选择，我们不替他改。
+function onProviderChange(){
+  const p = $("aiProvider").value;
+  const base = (aiDefaults.base_urls || {})[p] || "";
+  const model = (aiDefaults.models || {})[p] || "";
+  if (base && !$("aiBase").value.trim()){
+    $("aiBase").value = base;
+    log(`已为 ${p} 填入默认网关地址`, "ok");
+  }
+  if (model && !$("aiModel").value.trim()) $("aiModel").value = model;
 }
 
 async function loadAI(){
@@ -958,9 +980,19 @@ async function testAI(){
     });
     if (r.ok){
       const used = r.base_url_used || "";
-      const extra = (r.models || []).length ? `，可用模型 ${r.models.length} 个（点模型框可下拉选）` : "";
+      const models = r.models || [];
+      const extra = models.length ? `，可用模型 ${models.length} 个（点模型框可下拉选）` : "";
       log(`连接成功：${used}${extra}`, "ok");
       toast("连接成功");
+      // 模型框空着就直接填一个能用的；填了但不在清单里就只提醒，
+      // 不擅自替换用户的选择——真正的自动纠正由后端在分析前做（并写进日志）。
+      const input = $("aiModel");
+      if (!input.value.trim() && models.length){
+        input.value = models[0];
+        log(`模型框为空，已填入「${models[0]}」`, "ok");
+      }else if (input.value.trim() && models.length && !models.includes(input.value.trim())){
+        log(`「${input.value.trim()}」不在这个网关的模型清单里，分析时会自动换成最接近的可用模型`, "warn");
+      }
     }else{
       log(`连接失败：${r.error || "未知原因"}`, "bad");
       toast("连接失败，看日志");
@@ -984,6 +1016,8 @@ async function saveAI(){
   }catch(err){ log(`保存 AI 配置失败：${err}`, "bad"); }
 }
 
+let sugFilter = "all";
+
 function paintSuggestions(rows){
   suggestions = rows || [];
   if (!suggestions.length){
@@ -991,13 +1025,32 @@ function paintSuggestions(rows){
     $("btnAdoptAll").disabled = true;
     return;
   }
-  $("aiList").innerHTML = suggestions.map((s) => `<div class="sug">
+  // 置信度分层：AI 自己拿不准的那些，用户最需要逐条看一眼，别混在一起一键采纳。
+  const high = suggestions.filter((s) => (s.confidence || 0) >= 0.8);
+  const low = suggestions.filter((s) => (s.confidence || 0) < 0.55);
+  const shown = sugFilter === "high" ? high : sugFilter === "low" ? low : suggestions;
+  if (!shown.length){
+    $("aiList").innerHTML = `<div class="sug"><span>这个档位没有建议。</span></div>`;
+    $("btnAdoptAll").disabled = true;
+    return;
+  }
+  $("aiList").innerHTML = shown.map((s) => `<div class="sug">
       <b title="${esc(s.path)}">${esc(s.name || s.path)}</b>
       <span>→ <span class="to">${esc(s.target_dir)}</span> · ${Math.round((s.confidence || 0) * 100)}%</span>
       ${s.reason ? `<span> · ${esc(s.reason)}</span>` : ""}
     </div>`).join("");
   $("btnAdoptAll").disabled = false;
 }
+
+document.querySelectorAll("#sugFilter .keychip").forEach((el) => {
+  el.onclick = () => {
+    sugFilter = el.dataset.sug || "all";
+    document.querySelectorAll("#sugFilter .keychip").forEach((b) => {
+      b.classList.toggle("on", b === el);
+    });
+    paintSuggestions(suggestions);
+  };
+});
 
 async function askAI(){
   try{
@@ -1014,12 +1067,15 @@ async function askAI(){
 
 async function adoptAI(){
   if (!suggestions.length){ toast("还没有建议"); return; }
+  // 采纳的是全部建议，不是当前筛选档位：筛选只是"看"，不是"选"。
+  // 这点必须写进提示，否则用户以为只采纳了看得见的那些。
+  const total = suggestions.length;
   try{
     const res = await api.apply_suggestions(suggestions);
     if (!res.ok){ log(`采纳失败：${res.error}`, "bad"); toast(res.error || "失败"); return; }
     state.rows = (res.plan && res.plan.rows) || state.rows;
-    log(`已采纳 AI 建议：${res.updated} 个文件的目标目录已更新`, "ok");
-    toast(`已采纳 ${res.updated} 个`);
+    log(`已采纳 AI 建议：${res.updated} 条去向已改为 AI 建议（共 ${total} 条建议）`, "ok");
+    toast(`${res.updated} 条去向已改为 AI 建议`);
     render();
   }catch(err){ log(`采纳失败：${err}`, "bad"); }
 }
@@ -1065,6 +1121,7 @@ $("btnBack").onclick = rollback;
 $("btnBulk").onclick = bulkMove;
 $("btnSaveAI").onclick = saveAI;
 $("btnTestAI").onclick = testAI;
+$("aiProvider").onchange = onProviderChange;
 $("btnAI").onclick = askAI;
 $("btnAdoptAll").onclick = adoptAI;
 $("btnSelAll").onclick = () => {

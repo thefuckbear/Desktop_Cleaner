@@ -114,5 +114,14 @@ def ai_config_dict(path: str | Path | None = None) -> dict[str, Any]:
     masked = cfg.to_dict()
     masked["api_key"] = ""
     masked["has_key"] = bool(cfg.api_key)
+    # 各服务商的默认地址/模型由后端给：前端源码里不许出现外网地址字面量
+    # （tests/test_web_assets.py 会扫描整份 HTML 确认没有 https:// ），
+    # 而"切服务商自动填地址"这件事又只有前端能做，所以数据走 RPC 下发。
+    from .ai_assistant import DEFAULT_BASE_URLS, DEFAULT_MODELS
+
+    masked["defaults"] = {
+        "base_urls": dict(DEFAULT_BASE_URLS),
+        "models": dict(DEFAULT_MODELS),
+    }
     return masked
 

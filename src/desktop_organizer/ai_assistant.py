@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import time
 import uuid
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Iterable, Literal
@@ -167,10 +168,16 @@ def to_briefs(items: Iterable[FileItem]) -> list[FileMetaBrief]:
 
 
 def build_payload(briefs: Iterable[FileMetaBrief], cfg: AIConfig | None = None) -> dict:
-    """请求体：只有白名单字段。测试会断言没有 content/body/text/data 这类键。"""
+    """请求体：只有白名单字段。测试会断言没有 content/body/text/data 这类键。
+
+    带上 ``model`` 是为了让"实际用了哪个模型"在传输层就能被看见：
+    模型名填错时，只有在这里留痕，测试和日志才说得清发出去的是谁。
+    """
+    conf = cfg or AIConfig()
     return {
+        "model": conf.resolved_model(),
         "items": [brief.to_dict() for brief in briefs],
-        "custom_folders": list((cfg or AIConfig()).custom_folders),
+        "custom_folders": list(conf.custom_folders),
     }
 
 
@@ -584,6 +591,109 @@ def probe_endpoint(
         ),
         "tried": tried,
     }
+
+
+# ------------------------------------------------- 模型清单：纠正 + 缓存 + 脱敏
+
+# 5 分钟。分析前要校验模型名，但模型清单不该让每次分析都多等一个来回。
+MODEL_CACHE_TTL = 300.0
+_MODEL_CACHE: dict[str, tuple[float, list[str]]] = {}
+
+
+def clear_model_cache() -> None:
+    """清空模型清单缓存（测试与"换了 key 想立刻重拉"时用）。"""
+    _MODEL_CACHE.clear()
+
+
+def _parse_model_ids(text: str) -> list[str]:
+    try:
+        data = json.loads(text)
+    except (json.JSONDecodeError, ValueError):
+        return []
+    rows = data.get("data") if isinstance(data, dict) else None
+    return [
+        str(row.get("id")) for row in (rows or []) if isinstance(row, dict) and row.get("id")
+    ]
+
+
+def list_models(
+    base_url: str = "",
+    api_key: str = "",
+    *,
+    timeout: float = 20.0,
+    getter: Callable[[str, dict[str, str], float], tuple[int, str]] | None = None,
+    now: Callable[[], float] | None = None,
+) -> list[str]:
+    """拉网关的模型清单，5 分钟内复用。拿不到就返回空列表，绝不抛。
+
+    空列表的语义是"问不出来"，调用方据此**不要**擅自改模型名——
+    离线、网关没有 /models、401 都会走到这里，此时改名字只是瞎猜。
+    """
+    cache_key = (base_url or "").strip().rstrip("/")
+    if not cache_key:
+        return []
+    clock = now or time.monotonic
+    t = clock()
+    hit = _MODEL_CACHE.get(cache_key)
+    if hit and t - hit[0] < MODEL_CACHE_TTL:
+        return list(hit[1])
+
+    do_get = getter or (lambda url, headers, tm: _http_request("GET", url, headers, None, tm))
+    headers = _openai_headers(api_key)
+    for base in _bases_to_try(base_url):
+        try:
+            status, text = do_get(f"{base}/models", headers, timeout)
+        except Exception:  # noqa: BLE001 - 网络抖一下不该把分析整条拦死
+            continue
+        if status >= 400:
+            continue
+        ids = _parse_model_ids(text)
+        if ids:
+            _MODEL_CACHE[cache_key] = (t, ids)
+            return list(ids)
+    return []
+
+
+def _model_tokens(name: str) -> set[str]:
+    return {t for t in re.split(r"[-_.\s]+", (name or "").lower()) if t}
+
+
+def pick_model(want: str, available: Iterable[str]) -> tuple[str, str]:
+    """在网关真实清单里挑一个最接近 ``want`` 的模型，返回 ``(模型名, 给用户的说明)``。
+
+    名字对得上就原样返回且说明为空（别多嘴）；对不上就找词重叠最多的那个，
+    并把"你填的没有，我换成了什么"讲清楚——悄悄换掉模型比报错更难排查。
+    ``available`` 为空表示"问不出清单"，此时**原样返回**，不擅自改用户的配置。
+    """
+    names = [str(n) for n in (available or []) if str(n).strip()]
+    wanted = (want or "").strip()
+    if not names:
+        return wanted, ""
+    if not wanted:
+        return names[0], ""
+    lowered = {n.lower(): n for n in names}
+    if wanted.lower() in lowered:
+        return lowered[wanted.lower()], ""
+
+    want_tokens = _model_tokens(wanted)
+    best, best_score = "", 0
+    for name in names:
+        score = len(want_tokens & _model_tokens(name))
+        if score > best_score:
+            best, best_score = name, score
+    if best:
+        return best, f"你填的模型「{wanted}」在这个网关的清单里没有，已改用「{best}」"
+    return names[0], f"你填的模型「{wanted}」在这里找不到相近的，已挑一个可用的「{names[0]}」"
+
+
+def mask_key(key: str) -> str:
+    """日志里的 Key 只留头尾。日志经常被用户直接贴给别人看，绝不留明文。"""
+    text = key or ""
+    if not text:
+        return ""
+    if len(text) <= 8:
+        return "***"
+    return f"{text[:6]}***{text[-4:]}"
 
 
 def _post_gemini(cfg: AIConfig, payload: dict, timeout: float) -> str:

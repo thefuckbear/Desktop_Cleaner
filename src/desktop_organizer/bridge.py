@@ -15,7 +15,7 @@ import time
 from pathlib import Path
 from typing import Any, Callable
 
-from . import ai_assistant, executor, iconpos, journal, layout, planner, scanner, settings
+from . import ai_assistant, constants, executor, iconpos, journal, layout, planner, scanner, settings
 from .model import FileItem, Plan, PlanAction, Proposal
 from .progress import ProgressEvent
 from .store import PreferenceStore
@@ -227,6 +227,21 @@ class Bridge:
 
     # ---------- AI 顾问 ----------
 
+    def ai_log_path(self) -> Path:
+        """AI 日志位置。跟设置文件同目录，打包后就在 exe 旁边。"""
+        base = Path(self._settings_path).parent if self._settings_path else constants.LOG_DIR
+        return base / "ai.log"
+
+    def _ai_log(self, line: str) -> None:
+        """追加一行 AI 日志。写不进去也不能让分析失败——日志是证据，不是功能。"""
+        try:
+            path = self.ai_log_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(line.rstrip("\n") + "\n")
+        except OSError:
+            pass
+
     def ai_settings(self) -> dict[str, Any]:
         """前端读 AI 配置。api_key 一律打码，只回 has_key。"""
         return settings.ai_config_dict(self._settings_path)
@@ -297,8 +312,34 @@ class Bridge:
             }
         self.notify_progress("ai_analyzing", 0, len(items), message="正在分析文件元数据")
         cfg = settings.ai_config(self._settings_path)
+
+        # 分析前先对一遍模型清单：名字填错时 API 只会回一句 404/400，
+        # 用户看着"测试连接成功"却分析失败，根本不知道错在名字上。
+        note = ""
+        if cfg.provider != "off" and cfg.api_key:
+            try:
+                available = ai_assistant.list_models(cfg.resolved_base_url(), cfg.api_key)
+            except Exception:  # noqa: BLE001 - 拿不到清单就按原样发，不改用户配置
+                available = []
+            model, note = ai_assistant.pick_model(cfg.model, available)
+            if model != cfg.model:
+                cfg = dataclasses.replace(cfg, model=model)
+
+        started = time.perf_counter()
         suggestions, degraded, reason = ai_assistant.analyze(
             items, cfg, store=self.store, transport=transport
+        )
+        elapsed = time.perf_counter() - started
+        self._ai_log(
+            f"{time.strftime('%Y-%m-%d %H:%M:%S')} "
+            f"endpoint={cfg.resolved_base_url() or '(空)'} "
+            f"model={cfg.resolved_model() or '(空)'} "
+            f"key={ai_assistant.mask_key(cfg.api_key)} "
+            f"files={len(items)} elapsed={elapsed:.2f}s "
+            f"result={'degraded' if degraded else 'ok'} "
+            f"suggestions={len(suggestions)}"
+            + (f" note={note}" if note else "")
+            + (f" reason={reason}" if degraded else "")
         )
         self.notify_progress(
             "ai_analyzing",

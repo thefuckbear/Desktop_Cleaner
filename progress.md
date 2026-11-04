@@ -172,3 +172,30 @@
 - 踩坑记录：placeholder 里写了 `https://` 直接触发
   `test_no_external_network_resources`（前端零外网是硬约束），改成不带协议才过——
   **没有为了过测试去放宽那条断言**。
+
+## AI 易用性四项改造（2026-11-04 03:20）
+
+- 起因：用户 `m09621`「测试完毕，请你自行检查日志，继续完善 ai 大模型应用部分，使其更加易用和便利」。
+  查日志（`logs\ai.log` 与 `dist\DesktopOrganizer\logs\gui.log`）发现三处真实缺口：
+  1. `logs\ai.log` 最后写入停在**测试夹具**，`bridge.py` 里 **grep 不到任何日志写入** → AI 失败后用户无据可查。
+  2. 真机 `dist\DesktopOrganizer\data\settings.json` 里 `"model": "deepseek-flash"` **不在网关的 28 个模型里**，
+     而「测试连接」只探 `/models` 不校验模型名 → **测着是绿的，分析必失败**。
+  3. 配置要 6 步（服务商 → Key → 模型 → 网关 → 测试 → 保存）。
+- 用户用 ask_user_question 选择「四项全做」，并批准推荐方案（m09695「按推荐来」）。
+- 落地四项：
+  1. **模型自动纠正**：`pick_model(want, available)` 精确命中不改；不中按词重叠挑最近并把"换了什么"讲清楚；
+     `available` 为空**原样返回**（问不出清单时改名字等于瞎猜）。`list_models` 带 5 分钟缓存，缓存 key 是 base_url（换网关必重拉）。
+  2. **AI 日志**：`bridge._ai_log` 写时间 / 真实 endpoint / 实际模型 / 耗时 / 结果 / 建议数 / 纠正与降级原因；
+     Key 只留前 6 后 4（`mask_key`）；写失败一律吞掉（日志是证据，不是功能）。
+  3. **配置简化**：切服务商自动补**空的**默认地址与模型（用户填过的不动）；默认值由后端 `ai_config_dict()["defaults"]` 下发，
+     **前端源码不出现外网地址字面量**（`test_no_external_network_resources` 是硬约束，没有放宽断言）。
+  4. **建议更好用**：每条显示 `reason`；「高置信/待确认/全部」筛选芯片（复用 `.keychip`）；
+     「一键采纳」提示改为「N 条去向已改为 AI 建议」，并明确筛选只影响"看"不影响"采纳"。
+- 真机验证（sandbox 内 3 个样例文件，走 `HTTPS_PROXY=http://127.0.0.1:7897`）：
+  `degraded=False`、3 条建议、`elapsed=10.14s`；`ai.log` 单行记录
+  `endpoint=https://opencode.ai/zen/go/v1 model=deepseek-v4.1-flash key=oc_sk_***FzvP files=3 elapsed=10.14s result=ok suggestions=3 note=你填的模型「deepseek-flash」…已改用「deepseek-v4.1-flash」`；
+  **明文 key 泄漏检查：False**。
+- 门禁：`python -m pytest tests/ -q` → **435 passed, 1 skipped**（新增 `tests/test_ai_ux.py` 19 条，先 RED 19 failed 再转绿）。
+- 未完成：**exe 未重建**——用户 02:44 启动的 `DesktopOrganizer`（PID 17300）占着 `dist\DesktopOrganizer\data\webview`，
+  PyInstaller 清理 `dist` 时 `PermissionError [Win32] 32`，`BUILD_EXIT=1`；`dist\DesktopOrganizer\data\settings.json` 经核对**完好无损**。
+  已改用 `--distpath dist_new` 另行构建，等用户关掉程序后再替换。
