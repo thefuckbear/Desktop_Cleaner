@@ -58,3 +58,4 @@ credentials*
 Thumbs.db
 desktop.ini
 dist_new/
+_backup_dist_*/
